@@ -19,7 +19,6 @@ const { execFileSync } = require('child_process');
 
 const app = express();
 app.disable('x-powered-by');
-app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || './data');
 const TMP_DIR = path.join(DATA_DIR, 'tmp');
@@ -27,6 +26,12 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const BRAND_NAME = process.env.BRAND_NAME || 'Custom AMP Panel';
 const AGENT_TOKEN = process.env.PANEL_TO_AGENT_TOKEN || 'change-this-agent-token';
 const TIMEOUT = Number(process.env.NODE_API_TIMEOUT_MS || 10000);
+const UPGRADE_WEBSITE_URL = process.env.UPGRADE_WEBSITE_URL || process.env.SHOP_UPGRADE_URL || '';
+const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE || '20mb';
+const TRUST_PROXY = Number(process.env.TRUST_PROXY || 1);
+const API_ALLOWED_ORIGINS = String(process.env.API_CORS_ORIGIN || '*').split(',').map(s => s.trim()).filter(Boolean);
+app.set('trust proxy', TRUST_PROXY);
+
 
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID || '';
@@ -43,7 +48,9 @@ const API_PERMISSIONS = [
   { key: 'console:command', label: 'Send server commands' },
   { key: 'servers:list', label: 'List servers for bots' },
   { key: 'provision:user', label: 'Website: create users' },
-  { key: 'provision:server', label: 'Website: create servers' }
+  { key: 'provision:server', label: 'Website: create servers' },
+  { key: 'network:ports', label: 'Manage extra network ports' },
+  { key: 'provision:upgrade', label: 'Website: apply upgrades / resources' }
 ];
 
 function hashApiKey(token) {
@@ -52,18 +59,23 @@ function hashApiKey(token) {
 function makeApiKey() {
   return `cap_${crypto.randomBytes(32).toString('hex')}`;
 }
+function extractApiToken(req) {
+  const header = String(req.headers.authorization || '').trim();
+  if (/^Bearer\s+/i.test(header)) return header.replace(/^Bearer\s+/i, '').trim();
+  if (/^ApiKey\s+/i.test(header)) return header.replace(/^ApiKey\s+/i, '').trim();
+  return String(req.headers['x-api-key'] || req.headers['x-panel-api-key'] || req.query.apiKey || req.query.key || '').trim();
+}
 function requireApiPermission(permission) {
   return (req, res, next) => {
-    const header = req.headers.authorization || '';
-    const raw = header.startsWith('Bearer ') ? header.slice(7) : (req.headers['x-api-key'] || req.query.apiKey || '');
-    if (!raw) return res.status(401).json({ error: 'API key required.' });
+    const raw = extractApiToken(req);
+    if (!raw) return res.status(401).json({ ok: false, error: 'API key required. Send Authorization: Bearer YOUR_API_KEY or x-api-key.' });
     const db = readDb();
     const hash = hashApiKey(raw);
     const key = (db.apiKeys || []).find(k => k.hash === hash && !k.revokedAt);
-    if (!key) return res.status(401).json({ error: 'Invalid API key.' });
-    if (!key.permissions || !key.permissions.includes(permission)) return res.status(403).json({ error: `API key missing permission: ${permission}` });
+    if (!key) return res.status(401).json({ ok: false, error: 'Invalid API key. Create a new key in the panel and copy the full key shown once.' });
+    if (!key.permissions || !key.permissions.includes(permission)) return res.status(403).json({ ok: false, error: `API key missing permission: ${permission}` });
     const user = db.users.find(u => u.id === key.userId);
-    if (!user) return res.status(401).json({ error: 'API key user does not exist.' });
+    if (!user) return res.status(401).json({ ok: false, error: 'API key user does not exist.' });
     key.lastUsedAt = new Date().toISOString();
     writeDb(db);
     req.apiUser = user;
@@ -80,8 +92,9 @@ function getApiServer(req, res) {
   if (!node) { res.status(404).json({ error: 'Node missing.' }); return null; }
   return { db, server, node };
 }
-async function searchModrinth(query, gameVersion) {
-  const facets = JSON.stringify([["project_type:mod","project_type:plugin"]]);
+async function searchModrinth(query, gameVersion, addonKind = 'plugin', loaders = []) {
+  const projectType = addonKind === 'mod' ? 'mod' : 'plugin';
+  const facets = JSON.stringify([[`project_type:${projectType}`]]);
   const url = `https://api.modrinth.com/v2/search?limit=8&query=${encodeURIComponent(query)}&facets=${encodeURIComponent(facets)}`;
   const r = await fetch(url, { headers: { 'User-Agent': `${BRAND_NAME}/1.0` } });
   if (!r.ok) throw new Error(`Modrinth search failed: HTTP ${r.status}`);
@@ -90,9 +103,10 @@ async function searchModrinth(query, gameVersion) {
   for (const hit of (data.hits || []).slice(0, 8)) {
     let installUrl = '';
     try {
-      const loaders = encodeURIComponent(JSON.stringify(['paper','spigot','bukkit','purpur','fabric','forge','neoforge']));
+      const loaderList = loaders.length ? loaders : (projectType === 'mod' ? ['fabric','forge','neoforge','quilt'] : ['paper','spigot','bukkit','purpur']);
+      const loaderParam = encodeURIComponent(JSON.stringify(loaderList));
       const versionsPart = gameVersion ? `&game_versions=${encodeURIComponent(JSON.stringify([gameVersion]))}` : '';
-      const vr = await fetch(`https://api.modrinth.com/v2/project/${encodeURIComponent(hit.project_id)}/version?loaders=${loaders}${versionsPart}`, { headers: { 'User-Agent': `${BRAND_NAME}/1.0` } });
+      const vr = await fetch(`https://api.modrinth.com/v2/project/${encodeURIComponent(hit.project_id)}/version?loaders=${loaderParam}${versionsPart}`, { headers: { 'User-Agent': `${BRAND_NAME}/1.0` } });
       if (vr.ok) {
         const versions = await vr.json();
         const primary = versions && versions[0] && ((versions[0].files || []).find(f => f.primary) || (versions[0].files || [])[0]);
@@ -166,22 +180,89 @@ const PLUGIN_CATALOG = [
 ];
 
 
+const SERVER_TEMPLATES = [
+  { key: 'PAPER', label: 'Minecraft Paper', category: 'Minecraft Java', game: 'minecraft-paper', image: 'itzg/minecraft-server:java21', envType: 'PAPER', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins' },
+  { key: 'PURPUR', label: 'Minecraft Purpur', category: 'Minecraft Java', game: 'minecraft-purpur', image: 'itzg/minecraft-server:java21', envType: 'PURPUR', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins' },
+  { key: 'SPIGOT', label: 'Minecraft Spigot', category: 'Minecraft Java', game: 'minecraft-spigot', image: 'itzg/minecraft-server:java21', envType: 'SPIGOT', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins' },
+  { key: 'BUKKIT', label: 'Minecraft Bukkit', category: 'Minecraft Java', game: 'minecraft-bukkit', image: 'itzg/minecraft-server:java21', envType: 'BUKKIT', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins' },
+  { key: 'PUFFERFISH', label: 'Minecraft Pufferfish', category: 'Minecraft Java', game: 'minecraft-pufferfish', image: 'itzg/minecraft-server:java21', envType: 'PUFFERFISH', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins' },
+  { key: 'FABRIC', label: 'Minecraft Fabric', category: 'Minecraft Modded', game: 'minecraft-fabric', image: 'itzg/minecraft-server:java21', envType: 'FABRIC', defaultPort: 25565, defaultMemoryMb: 3072, defaultStorageMb: 15360, addons: 'mods' },
+  { key: 'QUILT', label: 'Minecraft Quilt', category: 'Minecraft Modded', game: 'minecraft-quilt', image: 'itzg/minecraft-server:java21', envType: 'QUILT', defaultPort: 25565, defaultMemoryMb: 3072, defaultStorageMb: 15360, addons: 'mods' },
+  { key: 'FORGE', label: 'Minecraft Forge', category: 'Minecraft Modded', game: 'minecraft-forge', image: 'itzg/minecraft-server:java21', envType: 'FORGE', defaultPort: 25565, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods' },
+  { key: 'NEOFORGE', label: 'Minecraft NeoForge', category: 'Minecraft Modded', game: 'minecraft-neoforge', image: 'itzg/minecraft-server:java21', envType: 'NEOFORGE', defaultPort: 25565, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods' },
+  { key: 'MOHIST', label: 'Minecraft Mohist', category: 'Minecraft Hybrid', game: 'minecraft-mohist', image: 'itzg/minecraft-server:java21', envType: 'MOHIST', defaultPort: 25565, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods/plugins' },
+  { key: 'MAGMA', label: 'Minecraft Magma', category: 'Minecraft Hybrid', game: 'minecraft-magma', image: 'itzg/minecraft-server:java21', envType: 'MAGMA', defaultPort: 25565, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods/plugins' },
+  { key: 'VANILLA', label: 'Minecraft Vanilla', category: 'Minecraft Java', game: 'minecraft-vanilla', image: 'itzg/minecraft-server:java21', envType: 'VANILLA', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'none' },
+  { key: 'CUSTOM', label: 'Minecraft Custom JAR', category: 'Minecraft Java', game: 'minecraft-custom-jar', image: 'itzg/minecraft-server:java21', envType: 'CUSTOM', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins/mods' },
+  { key: 'VELOCITY', label: 'Velocity Proxy', category: 'Minecraft Proxy', game: 'minecraft-velocity', image: 'itzg/mc-proxy', envType: 'VELOCITY', defaultPort: 25577, defaultMemoryMb: 512, defaultStorageMb: 2048, addons: 'plugins' },
+  { key: 'BUNGEECORD', label: 'BungeeCord Proxy', category: 'Minecraft Proxy', game: 'minecraft-bungeecord', image: 'itzg/mc-proxy', envType: 'BUNGEECORD', defaultPort: 25577, defaultMemoryMb: 512, defaultStorageMb: 2048, addons: 'plugins' },
+  { key: 'WATERFALL', label: 'Waterfall Proxy', category: 'Minecraft Proxy', game: 'minecraft-waterfall', image: 'itzg/mc-proxy', envType: 'WATERFALL', defaultPort: 25577, defaultMemoryMb: 512, defaultStorageMb: 2048, addons: 'plugins' },
+  { key: 'RUST', label: 'Rust Dedicated Server', category: 'Survival Games', game: 'rust', image: 'didstopia/rust-server:latest', envType: 'RUST', defaultPort: 28015, defaultMemoryMb: 6144, defaultStorageMb: 30720, addons: 'oxide/plugins' },
+  { key: 'TERRARIA', label: 'Terraria', category: 'Survival Games', game: 'terraria', image: 'ryshe/terraria:latest', envType: 'TERRARIA', defaultPort: 7777, defaultMemoryMb: 1024, defaultStorageMb: 5120, addons: 'world/files' },
+  { key: 'VALHEIM', label: 'Valheim', category: 'Survival Games', game: 'valheim', image: 'lloesche/valheim-server:latest', envType: 'VALHEIM', defaultPort: 2456, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods/manual' },
+  { key: 'FACTORIO', label: 'Factorio', category: 'Automation Games', game: 'factorio', image: 'factoriotools/factorio:stable', envType: 'FACTORIO', defaultPort: 34197, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'mods/manual' }
+];
 function gameTypeConfig(type) {
   const key = String(type || 'PAPER').toUpperCase();
-  const map = {
-    PAPER: { game: 'minecraft-paper', image: 'itzg/minecraft-server:java21', envType: 'PAPER', defaultPort: 25565 },
-    PURPUR: { game: 'minecraft-purpur', image: 'itzg/minecraft-server:java21', envType: 'PURPUR', defaultPort: 25565 },
-    FABRIC: { game: 'minecraft-fabric', image: 'itzg/minecraft-server:java21', envType: 'FABRIC', defaultPort: 25565 },
-    FORGE: { game: 'minecraft-forge', image: 'itzg/minecraft-server:java21', envType: 'FORGE', defaultPort: 25565 },
-    NEOFORGE: { game: 'minecraft-neoforge', image: 'itzg/minecraft-server:java21', envType: 'NEOFORGE', defaultPort: 25565 },
-    VANILLA: { game: 'minecraft-vanilla', image: 'itzg/minecraft-server:java21', envType: 'VANILLA', defaultPort: 25565 },
-    VELOCITY: { game: 'minecraft-velocity', image: 'itzg/mc-proxy', envType: 'VELOCITY', defaultPort: 25577 },
-    BUNGEECORD: { game: 'minecraft-bungeecord', image: 'itzg/mc-proxy', envType: 'BUNGEECORD', defaultPort: 25577 },
-    WATERFALL: { game: 'minecraft-waterfall', image: 'itzg/mc-proxy', envType: 'WATERFALL', defaultPort: 25577 },
-    RUST: { game: 'rust', image: 'didstopia/rust-server:latest', envType: 'RUST', defaultPort: 28015 },
-    CUSTOM: { game: 'minecraft-custom-jar', image: 'itzg/minecraft-server:java21', envType: 'CUSTOM', defaultPort: 25565 }
-  };
-  return map[key] || map.PAPER;
+  return SERVER_TEMPLATES.find(t => t.key === key) || SERVER_TEMPLATES[0];
+}
+
+function serverTypeKey(value) {
+  const raw = String(value || '').toUpperCase();
+  if (raw.includes('PAPER')) return 'PAPER';
+  if (raw.includes('PURPUR')) return 'PURPUR';
+  if (raw.includes('SPIGOT')) return 'SPIGOT';
+  if (raw.includes('BUKKIT')) return 'BUKKIT';
+  if (raw.includes('PUFFERFISH')) return 'PUFFERFISH';
+  if (raw.includes('FABRIC')) return 'FABRIC';
+  if (raw.includes('FORGE') && !raw.includes('NEOFORGE')) return 'FORGE';
+  if (raw.includes('NEOFORGE')) return 'NEOFORGE';
+  if (raw.includes('QUILT')) return 'QUILT';
+  if (raw.includes('MOHIST')) return 'MOHIST';
+  if (raw.includes('MAGMA')) return 'MAGMA';
+  if (raw.includes('VELOCITY')) return 'VELOCITY';
+  if (raw.includes('BUNGEE')) return 'BUNGEECORD';
+  if (raw.includes('WATERFALL')) return 'WATERFALL';
+  if (raw.includes('RUST')) return 'RUST';
+  if (raw.includes('TERRARIA')) return 'TERRARIA';
+  if (raw.includes('VALHEIM')) return 'VALHEIM';
+  if (raw.includes('FACTORIO')) return 'FACTORIO';
+  return raw || 'PAPER';
+}
+function addonInfo(server) {
+  const type = serverTypeKey((server && (server.serverType || server.type || server.game)) || 'PAPER');
+  if (['PAPER','PURPUR','SPIGOT','BUKKIT','PUFFERFISH','VELOCITY','BUNGEECORD','WATERFALL'].includes(type)) return { kind: 'plugin', folder: 'plugins', label: 'Plugins', loaders: ['paper','spigot','bukkit','purpur'] };
+  if (['FABRIC','QUILT','FORGE','NEOFORGE','MOHIST','MAGMA'].includes(type)) return { kind: 'mod', folder: 'mods', label: type === 'MOHIST' || type === 'MAGMA' ? 'Mods / Plugins' : 'Mods', loaders: [type.toLowerCase()] };
+  return { kind: 'none', folder: '', label: 'Add-ons', loaders: [] };
+}
+function userPortLimit(user) {
+  return Number(user && (user.portSlots ?? user.networkPortSlots ?? 0)) || (user && user.role === 'admin' ? 999 : 0);
+}
+function usedPortSlots(db, userId) {
+  return (db.servers || []).filter(s => s.ownerId === userId).reduce((total, srv) => total + ((srv.networkPorts || []).length), 0);
+}
+function userBackupLimit(user) {
+  return Number(user && (user.backupSlots ?? 0)) || (user && user.role === 'admin' ? 999 : 0);
+}
+function userDatabaseLimit(user) {
+  return Number(user && (user.databaseSlots ?? user.databases ?? 0)) || (user && user.role === 'admin' ? 999 : 0);
+}
+function countBackupItems(backups) {
+  return Array.isArray(backups && backups.backups) ? backups.backups.length : 0;
+}
+function backupScheduleMs(value) {
+  const v = String(value || 'off').toLowerCase();
+  if (v === 'daily') return 24 * 60 * 60 * 1000;
+  if (v === 'weekly') return 7 * 24 * 60 * 60 * 1000;
+  if (v === 'monthly') return 30 * 24 * 60 * 60 * 1000;
+  if (v === 'hourly') return 60 * 60 * 1000;
+  return 0;
+}
+function normalizePortRecord(body) {
+  const port = Number(body.port || body.publicPort);
+  const protocol = String(body.protocol || body.type || 'tcp').toLowerCase() === 'udp' ? 'udp' : 'tcp';
+  const containerPort = Number(body.containerPort || body.targetPort || port);
+  return { port, publicPort: port, containerPort, type: protocol, protocol, notes: body.notes || '', createdAt: new Date().toISOString() };
 }
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -202,12 +283,20 @@ function normalizeDb(data) {
   data.plans = data.plans || [];
   for (const user of data.users) {
     user.subdomainSlots = Number(user.subdomainSlots || (user.role === 'admin' ? 999 : 0));
+    user.portSlots = Number(user.portSlots ?? user.networkPortSlots ?? (user.role === 'admin' ? 999 : 0));
+    user.backupSlots = Number(user.backupSlots ?? (user.role === 'admin' ? 999 : 1));
+    user.databaseSlots = Number(user.databaseSlots ?? user.databases ?? (user.role === 'admin' ? 999 : 0));
   }
   for (const srv of data.servers) {
     srv.subusers = srv.subusers || [];
     srv.networkPorts = srv.networkPorts || [];
     srv.databases = srv.databases || [];
     srv.subdomains = srv.subdomains || [];
+    srv.backupSchedule = srv.backupSchedule || { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null };
+    srv.resourceStop = srv.resourceStop || null;
+    srv.lastStopReason = srv.lastStopReason || null;
+    srv.serverType = srv.serverType || serverTypeKey(srv.game || srv.type || 'PAPER');
+    srv.networkPorts = (srv.networkPorts || []).map(p => Object.assign({}, p, { port: Number(p.port || p.publicPort), publicPort: Number(p.publicPort || p.port), containerPort: Number(p.containerPort || p.port || p.publicPort), type: p.type || p.protocol || 'tcp', protocol: p.protocol || p.type || 'tcp' }));
   }
   return data;
 }
@@ -265,7 +354,7 @@ function writeDb(db) {
 }
 function addAudit(action, details = {}) {
   const db = readDb();
-  db.audit.unshift({ id: uuidv4(), action, details, subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() });
+  db.audit.unshift({ id: uuidv4(), action, details, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
   db.audit = db.audit.slice(0, 200);
   writeDb(db);
 }
@@ -276,7 +365,7 @@ async function bootstrapAdmin() {
   const reset = String(process.env.RESET_ADMIN_ON_START || 'false').toLowerCase() === 'true';
   let user = db.users.find(u => String(u.email || '').toLowerCase() === String(email).toLowerCase());
   if (!user) {
-    user = { id: uuidv4(), email, name: 'Admin', role: 'admin', subdomainSlots: 999, subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() };
+    user = { id: uuidv4(), email, name: 'Admin', role: 'admin', subdomainSlots: 999, portSlots: 999, backupSlots: 999, databaseSlots: 999, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() };
     db.users.push(user);
     console.log(`Created admin user: ${email}`);
   }
@@ -287,6 +376,9 @@ async function bootstrapAdmin() {
   user.email = email;
   user.role = 'admin';
   user.subdomainSlots = Number(user.subdomainSlots || 999);
+  user.portSlots = Number(user.portSlots || 999);
+  user.backupSlots = Number(user.backupSlots || 999);
+  user.databaseSlots = Number(user.databaseSlots || 999);
   writeDb(db);
 }
 function requireLogin(req, res, next) { if (!req.session.userId) return res.redirect('/login'); next(); }
@@ -344,8 +436,8 @@ app.use(helmet({
   referrerPolicy: { policy: 'same-origin' }
 }));
 app.use(morgan('dev'));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
-app.use(express.json({ limit: '20mb' }));
+app.use(express.urlencoded({ extended: true, limit: MAX_BODY_SIZE }));
+app.use(express.json({ limit: MAX_BODY_SIZE }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
@@ -393,7 +485,7 @@ app.get('/servers/:id', requireLogin, async (req, res) => {
   try { mods = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=mods`); } catch (e) { mods = { error: e.message, items: [] }; }
   try { settings = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/settings`); } catch (e) { settings = { error: e.message, settings: {} }; }
   try { ftp = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/ftp`); } catch (e) { ftp = { error: e.message, enabled: false }; }
-  res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, allUsers: ctx.db.users, ftp });
+  res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user });
 });
 
 app.post('/servers/:id/action', requireLogin, async (req, res) => {
@@ -404,6 +496,27 @@ app.post('/servers/:id/action', requireLogin, async (req, res) => {
   catch (e) { req.flash('error', e.message); }
   res.redirect(`/servers/${ctx.server.id}`);
 });
+
+app.post('/servers/:id/resources/upgrade', requireLogin, async (req, res) => {
+  const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
+  if (ctx.user.role !== 'admin') { req.flash('error', 'Only admins can directly change server resources. Use the upgrade button to buy more resources.'); return res.redirect(`/servers/${ctx.server.id}`); }
+  const memoryMb = Math.max(128, Number(req.body.memoryMb || ctx.server.memoryMb || 2048));
+  const cpuLimit = Math.max(0.1, Number(req.body.cpuLimit || ctx.server.cpuLimit || 1));
+  const storageLimitMb = Math.max(512, Number(req.body.storageLimitMb || ctx.server.storageLimitMb || 10240));
+  ctx.server.memoryMb = memoryMb;
+  ctx.server.cpuLimit = cpuLimit;
+  ctx.server.storageLimitMb = storageLimitMb;
+  ctx.server.resourceStop = null;
+  ctx.server.lastStopReason = null;
+  writeDb(ctx.db);
+  try {
+    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/resources`, { method: 'POST', timeout: TIMEOUT * 20, body: { memoryMb, cpuLimit, storageLimitMb, port: ctx.server.port, networkPorts: ctx.server.networkPorts || [] } });
+    req.flash('success', 'Resources upgraded and Docker limits updated. You can start the server again now.');
+    addAudit('server.resources.upgrade', { serverId: ctx.server.id, memoryMb, cpuLimit, storageLimitMb, by: ctx.user.email });
+  } catch (e) { req.flash('error', e.message); }
+  res.redirect(`/servers/${ctx.server.id}`);
+});
+
 app.post('/servers/:id/command', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
   try { await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/command`, { method: 'POST', body: { command: req.body.command } }); req.flash('success', 'Command sent.'); }
@@ -514,8 +627,35 @@ app.get('/servers/:id/saves/world/download', requireLogin, async (req, res) => {
 
 app.post('/servers/:id/backups/create', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
-  try { await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 }); req.flash('success', 'Backup created.'); }
-  catch (e) { req.flash('error', e.message); }
+  const owner = ctx.db.users.find(u => u.id === ctx.server.ownerId) || {};
+  try {
+    const existing = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`);
+    const used = countBackupItems(existing);
+    const limit = userBackupLimit(owner);
+    if (owner.role !== 'admin' && used >= limit) {
+      req.flash('error', `No backup slots left. Used ${used}/${limit}. Delete a backup or buy more backup slots.`);
+      return res.redirect(`/servers/${ctx.server.id}#backups`);
+    }
+    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 });
+    req.flash('success', 'Backup created.');
+  } catch (e) { req.flash('error', e.message); }
+  res.redirect(`/servers/${ctx.server.id}#backups`);
+});
+
+app.post('/servers/:id/backups/schedule', requireLogin, async (req, res) => {
+  const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
+  const interval = String(req.body.interval || 'off').toLowerCase();
+  const enabled = interval !== 'off';
+  const ms = backupScheduleMs(interval);
+  ctx.server.backupSchedule = {
+    enabled,
+    interval,
+    keepLatest: Math.max(1, Number(req.body.keepLatest || 1)),
+    lastRunAt: ctx.server.backupSchedule && ctx.server.backupSchedule.lastRunAt || null,
+    nextRunAt: enabled && ms ? new Date(Date.now() + ms).toISOString() : null
+  };
+  writeDb(ctx.db);
+  req.flash('success', enabled ? 'Automatic backup schedule saved.' : 'Automatic backups turned off.');
   res.redirect(`/servers/${ctx.server.id}#backups`);
 });
 app.get('/servers/:id/backups/:name', requireLogin, async (req, res) => {
@@ -537,7 +677,14 @@ app.post('/servers/:id/backups/delete', requireLogin, async (req, res) => {
 
 app.post('/servers/:id/installer', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
-  try { await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/installer`, { method: 'POST', body: { type: req.body.type, url: req.body.url }, timeout: TIMEOUT * 30 }); req.flash('success', 'Plugin/mod installed. Restart the server if needed.'); }
+  try {
+    const info = addonInfo(ctx.server);
+    if (info.kind === 'none') throw new Error('This game type does not support plugin/mod auto-install yet. Use the file manager instead.');
+    const requestedType = req.body.type === 'mod' ? 'mod' : 'plugin';
+    if (requestedType !== info.kind) throw new Error(`${info.label} only are allowed for this server type.`);
+    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/installer`, { method: 'POST', body: { type: info.kind, url: req.body.url }, timeout: TIMEOUT * 30 });
+    req.flash('success', `${info.kind === 'mod' ? 'Mod' : 'Plugin'} installed. Restart the server if needed.`);
+  }
   catch (e) { req.flash('error', e.message); }
   res.redirect(`/servers/${ctx.server.id}#addons`);
 });
@@ -571,16 +718,19 @@ app.post('/servers/:id/settings', requireLogin, async (req, res) => {
 
 app.get('/servers/:id/addons/search', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
+  const info = addonInfo(ctx.server);
   const query = String(req.query.q || '').trim();
   const source = String(req.query.source || 'all').toLowerCase();
-  if (!query) return res.json({ results: [] });
+  if (!query) return res.json({ addonKind: info.kind, results: [] });
+  if (info.kind === 'none') return res.json({ addonKind: info.kind, results: [] });
   const gameVersion = String(req.query.version || '').trim();
   const tasks = [];
-  if (source === 'all' || source === 'modrinth') tasks.push(searchModrinth(query, gameVersion).catch(e => [{ source: 'Modrinth', error: e.message }]));
-  if (source === 'all' || source === 'hangar') tasks.push(searchHangar(query).catch(e => [{ source: 'Hangar', error: e.message }]));
-  if (source === 'all' || source === 'spigot' || source === 'spiget') tasks.push(searchSpiget(query).catch(e => [{ source: 'Spigot/Spiget', error: e.message }]));
+  if (source === 'all' || source === 'modrinth') tasks.push(searchModrinth(query, gameVersion, info.kind, info.loaders).catch(e => [{ source: 'Modrinth', error: e.message }]));
+  if (info.kind === 'plugin' && (source === 'all' || source === 'hangar')) tasks.push(searchHangar(query).catch(e => [{ source: 'Hangar', error: e.message }]));
+  if (info.kind === 'plugin' && (source === 'all' || source === 'spigot' || source === 'spiget')) tasks.push(searchSpiget(query).catch(e => [{ source: 'Spigot/Spiget', error: e.message }]));
   const chunks = await Promise.all(tasks);
-  res.json({ results: chunks.flat().slice(0, 24) });
+  const results = chunks.flat().filter(item => item.error || item.type === info.kind).slice(0, 24);
+  res.json({ addonKind: info.kind, results });
 });
 
 app.post('/servers/:id/backups/restore', requireLogin, async (req, res) => {
@@ -674,8 +824,14 @@ app.post('/api/v1/servers/:id/restart', requireApiPermission('server:restart'), 
 });
 app.post('/api/v1/servers/:id/backups', requireApiPermission('backup:create'), async (req, res) => {
   const ctx = getApiServer(req, res); if (!ctx) return;
-  try { res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 })); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const owner = ctx.db.users.find(u => u.id === ctx.server.ownerId) || {};
+    const existing = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`);
+    const used = countBackupItems(existing);
+    const limit = userBackupLimit(owner);
+    if (owner.role !== 'admin' && used >= limit) return res.status(409).json({ ok: false, error: `No backup slots left. Used ${used}/${limit}.` });
+    res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/api/v1/servers/:id/backups/:name', requireApiPermission('backup:download'), async (req, res) => {
   const ctx = getApiServer(req, res); if (!ctx) return;
@@ -697,7 +853,7 @@ app.post('/servers/:id/subusers', requireLogin, async (req, res) => {
   if (!target) { req.flash('error', 'User not found. Create the user first.'); return res.redirect(`/servers/${ctx.server.id}#subusers`); }
   ctx.server.subusers = ctx.server.subusers || [];
   if (!ctx.server.subusers.some(su => su.userId === target.id)) {
-    ctx.server.subusers.push({ userId: target.id, permissions: Array.isArray(req.body.permissions) ? req.body.permissions : (req.body.permissions ? [req.body.permissions] : []), subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() });
+    ctx.server.subusers.push({ userId: target.id, permissions: Array.isArray(req.body.permissions) ? req.body.permissions : (req.body.permissions ? [req.body.permissions] : []), subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
     writeDb(ctx.db);
   }
   req.flash('success', 'Subuser added.');
@@ -713,25 +869,42 @@ app.post('/servers/:id/subusers/remove', requireLogin, async (req, res) => {
 app.post('/servers/:id/network/ports', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
   ctx.server.networkPorts = ctx.server.networkPorts || [];
-  const port = Number(req.body.port);
-  if (!port || port < 1 || port > 65535) { req.flash('error', 'Invalid port.'); return res.redirect(`/servers/${ctx.server.id}#network`); }
-  if (!ctx.server.networkPorts.some(p => Number(p.port) === port)) ctx.server.networkPorts.push({ port, type: req.body.type || 'tcp', notes: req.body.notes || '', subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() });
+  const record = normalizePortRecord(req.body);
+  if (!record.port || record.port < 1 || record.port > 65535) { req.flash('error', 'Invalid public port.'); return res.redirect(`/servers/${ctx.server.id}#network`); }
+  if (!record.containerPort || record.containerPort < 1 || record.containerPort > 65535) { req.flash('error', 'Invalid container port.'); return res.redirect(`/servers/${ctx.server.id}#network`); }
+  const owner = ctx.db.users.find(u => u.id === ctx.server.ownerId) || ctx.user;
+  const used = usedPortSlots(ctx.db, owner.id);
+  const limit = userPortLimit(owner);
+  if (owner.role !== 'admin' && used >= limit) { req.flash('error', `No extra port slots left. Used ${used}/${limit}. Ask an admin for more port slots.`); return res.redirect(`/servers/${ctx.server.id}#network`); }
+  const portTaken = ctx.db.servers.some(s => Number(s.port) === record.port || (s.networkPorts || []).some(p => Number(p.port || p.publicPort) === record.port));
+  if (portTaken) { req.flash('error', 'That public port is already used by another server.'); return res.redirect(`/servers/${ctx.server.id}#network`); }
+  ctx.server.networkPorts.push(record);
+  try {
+    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/resources`, { method: 'POST', timeout: TIMEOUT * 20, body: { memoryMb: ctx.server.memoryMb, cpuLimit: ctx.server.cpuLimit, storageLimitMb: ctx.server.storageLimitMb, port: ctx.server.port, networkPorts: ctx.server.networkPorts } });
+    req.flash('success', 'Extra port added and Docker container recreated with the new binding.');
+  } catch (e) {
+    req.flash('error', `Port saved in panel, but the agent could not rebind Docker: ${e.message}`);
+  }
   writeDb(ctx.db);
-  req.flash('success', 'Network port added to the server record. Add Docker port binding support before using it live.');
   res.redirect(`/servers/${ctx.server.id}#network`);
 });
 app.post('/servers/:id/network/ports/remove', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
-  ctx.server.networkPorts = (ctx.server.networkPorts || []).filter(p => String(p.port) !== String(req.body.port));
+  ctx.server.networkPorts = (ctx.server.networkPorts || []).filter(p => String(p.port || p.publicPort) !== String(req.body.port));
+  try {
+    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/resources`, { method: 'POST', timeout: TIMEOUT * 20, body: { memoryMb: ctx.server.memoryMb, cpuLimit: ctx.server.cpuLimit, storageLimitMb: ctx.server.storageLimitMb, port: ctx.server.port, networkPorts: ctx.server.networkPorts } });
+    req.flash('success', 'Network port removed and Docker container recreated.');
+  } catch (e) {
+    req.flash('error', `Port removed in panel, but the agent could not rebind Docker: ${e.message}`);
+  }
   writeDb(ctx.db);
-  req.flash('success', 'Network port removed.');
   res.redirect(`/servers/${ctx.server.id}#network`);
 });
 app.post('/servers/:id/databases', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
   ctx.server.databases = ctx.server.databases || [];
   const name = String(req.body.name || `${ctx.server.name}_db`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 48);
-  ctx.server.databases.push({ id: uuidv4(), name, engine: req.body.engine || 'mysql', username: req.body.username || name, host: req.body.host || 'localhost', port: req.body.port || '3306', subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() });
+  ctx.server.databases.push({ id: uuidv4(), name, engine: req.body.engine || 'mysql', username: req.body.username || name, host: req.body.host || 'localhost', port: req.body.port || '3306', subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
   writeDb(ctx.db);
   req.flash('success', 'Database record added. This stores DB details now; automatic DB server creation can be wired next.');
   res.redirect(`/servers/${ctx.server.id}#database`);
@@ -862,7 +1035,23 @@ app.post('/servers/:id/subdomains/remove', requireLogin, async (req, res) => {
   res.redirect(`/servers/${ctx.server.id}#subdomains`);
 });
 
+app.use('/api', (req, res, next) => {
+  const origin = req.headers.origin;
+  if (API_ALLOWED_ORIGINS.includes('*')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin && API_ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-api-key, x-panel-api-key');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 app.use('/api/', apiLimiter);
+app.get('/api/v1/me', requireApiPermission('servers:list'), (req, res) => res.json({ ok: true, user: { id: req.apiUser.id, email: req.apiUser.email, role: req.apiUser.role }, permissions: req.apiKey.permissions || [] }));
+app.get('/api/v1/server-templates', requireApiPermission('servers:list'), (req, res) => res.json({ ok: true, templates: SERVER_TEMPLATES }));
+app.get('/api/v1/plans', requireApiPermission('servers:list'), (req, res) => { const db = readDb(); res.json({ ok: true, plans: db.plans || [] }); });
 app.get('/api/servers', requireApiPermission('servers:list'), (req, res) => {
   const db = readDb();
   const servers = req.apiUser.role === 'admin' ? db.servers : db.servers.filter(s => s.ownerId === req.apiUser.id);
@@ -878,36 +1067,77 @@ app.post('/api/servers/:id/stop', requireApiPermission('server:stop'), async (re
 app.post('/api/servers/:id/restart', requireApiPermission('server:restart'), async (req, res) => { const ctx = getApiServer(req, res); if (!ctx) return; try { res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/restart`, { method: 'POST' })); } catch (e) { res.status(500).json({ error: e.message }); } });
 app.get('/api/servers/:id/logs', requireApiPermission('console:read'), async (req, res) => { const ctx = getApiServer(req, res); if (!ctx) return; try { res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/logs?lines=${encodeURIComponent(req.query.lines || '5000')}`)); } catch (e) { res.status(500).json({ error: e.message }); } });
 app.post('/api/servers/:id/command', requireApiPermission('console:command'), async (req, res) => { const ctx = getApiServer(req, res); if (!ctx) return; try { res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/command`, { method: 'POST', body: { command: req.body.command } })); } catch (e) { res.status(500).json({ error: e.message }); } });
-app.post('/api/servers/:id/backups', requireApiPermission('backup:create'), async (req, res) => { const ctx = getApiServer(req, res); if (!ctx) return; try { res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 })); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.post('/api/servers/:id/backups', requireApiPermission('backup:create'), async (req, res) => { const ctx = getApiServer(req, res); if (!ctx) return; try { const owner = ctx.db.users.find(u => u.id === ctx.server.ownerId) || {}; const existing = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`); const used = countBackupItems(existing); const limit = userBackupLimit(owner); if (owner.role !== 'admin' && used >= limit) return res.status(409).json({ ok: false, error: `No backup slots left. Used ${used}/${limit}.` }); res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 })); } catch (e) { res.status(500).json({ error: e.message }); } });
 app.get('/api/servers/:id/backups', requireApiPermission('backup:download'), async (req, res) => { const ctx = getApiServer(req, res); if (!ctx) return; try { res.json(await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`)); } catch (e) { res.status(500).json({ error: e.message }); } });
 
-app.post('/api/v1/provision/order', requireApiPermission('provision:server'), async (req, res) => {
+async function handleProvisionUser(req, res) {
   const db = readDb();
   try {
-    let user = db.users.find(u => u.email.toLowerCase() === String(req.body.email || '').toLowerCase());
+    const email = String(req.body.email || req.body.customerEmail || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ ok: false, error: 'email is required.' });
+    let user = db.users.find(u => String(u.email || '').toLowerCase() === email);
     let plainPassword = null;
     if (!user) {
-      if (!req.apiKey.permissions.includes('provision:user')) return res.status(403).json({ error: 'API key missing permission: provision:user' });
       plainPassword = req.body.password || crypto.randomBytes(8).toString('hex');
-      user = { id: uuidv4(), email: req.body.email, name: req.body.name || req.body.email, role: 'user', passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
+      user = { id: uuidv4(), email, name: req.body.name || email, role: req.body.role === 'admin' && req.apiUser.role === 'admin' ? 'admin' : 'user', subdomainSlots: Number(req.body.subdomainSlots || 0), portSlots: Number(req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || 0), passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
       db.users.push(user);
-      writeDb(db);
+    } else {
+      user.name = req.body.name || user.name;
+      user.subdomainSlots = Math.max(Number(user.subdomainSlots || 0), Number(req.body.subdomainSlots || 0));
+      user.portSlots = Math.max(Number(user.portSlots || 0), Number(req.body.portSlots || 0));
+      user.backupSlots = Math.max(Number(user.backupSlots || 0), Number(req.body.backupSlots || 0));
+      user.databaseSlots = Math.max(Number(user.databaseSlots || 0), Number(req.body.databaseSlots || 0));
     }
+    writeDb(db);
+    res.json({ ok: true, user: { id: user.id, email: user.email, created: !!plainPassword, password: plainPassword }, loginUrl: process.env.PANEL_LOGIN_URL || '/login' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+}
+
+async function handleProvisionOrder(req, res) {
+  const db = readDb();
+  try {
+    const email = String(req.body.email || req.body.customerEmail || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ ok: false, error: 'email is required.' });
+    let user = db.users.find(u => String(u.email || '').toLowerCase() === email);
+    let plainPassword = null;
+    if (!user) {
+      if (!req.apiKey.permissions.includes('provision:user')) return res.status(403).json({ ok: false, error: 'API key missing permission: provision:user' });
+      plainPassword = req.body.password || crypto.randomBytes(8).toString('hex');
+      user = { id: uuidv4(), email, name: req.body.name || email, role: 'user', subdomainSlots: Number(req.body.subdomainSlots || 0), portSlots: Number(req.body.extraPorts || req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || req.body.databases || 0), subusers: [], networkPorts: [], databases: [], subdomains: [], passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
+      db.users.push(user);
+    }
+    const plan = (db.plans || []).find(p => p.id === req.body.planId || p.name === req.body.planId || p.name === req.body.planName);
+    if (plan && Number(plan.extraPorts || 0) > 0) user.portSlots = Math.max(userPortLimit(user), usedPortSlots(db, user.id) + Number(plan.extraPorts || 0));
+    if (plan && Number(plan.backupSlots || 0) > 0) user.backupSlots = Math.max(userBackupLimit(user), Number(user.backupSlots || 0) + Number(plan.backupSlots || 0));
+    if (plan && Number(plan.subdomainSlots || 0) > 0) user.subdomainSlots = Math.max(Number(user.subdomainSlots || 0), Number(user.subdomainSlots || 0) + Number(plan.subdomainSlots || 0));
+    if (plan && Number(plan.databases || 0) > 0) user.databaseSlots = Math.max(userDatabaseLimit(user), Number(user.databaseSlots || 0) + Number(plan.databases || 0));
     const node = db.nodes.find(n => n.id === (req.body.nodeId || '')) || db.nodes[0];
-    if (!node) return res.status(400).json({ error: 'No node exists. Add a node first.' });
-    const memoryMb = Number(req.body.memoryMb || 2048);
-    const cpuLimit = Number(req.body.cpuLimit || 1);
-    const storageLimitMb = Number(req.body.storageLimitMb || 10240);
-    const port = Number(req.body.port || 25565);
+    if (!node) return res.status(400).json({ ok: false, error: 'No node exists. Add a node first.' });
+    const memoryMb = Number(req.body.memoryMb || (plan && plan.memoryMb) || 2048);
+    const cpuLimit = Number(req.body.cpuLimit || (plan && plan.cpuLimit) || 1);
+    const storageLimitMb = Number(req.body.storageLimitMb || (plan && plan.storageLimitMb) || 10240);
+    const cfg = gameTypeConfig(req.body.serverType || req.body.type || req.body.gameType || 'PAPER');
+    const port = Number(req.body.port || cfg.defaultPort || 25565);
+    const portTaken = db.servers.some(s => Number(s.port) === port || (s.networkPorts || []).some(p => Number(p.port || p.publicPort) === port));
+    if (portTaken) return res.status(409).json({ ok: false, error: `Port ${port} is already used by another server.` });
     const ipAddress = req.body.ipAddress || node.publicIp || nodeHostFromUrl(node.url);
-    const name = req.body.serverName || `${user.name || 'server'}-${Date.now()}`;
-    const created = await callAgent(node, '/servers', { method: 'POST', body: { name, game: gameTypeConfig(req.body.serverType || req.body.type || 'PAPER').game, image: req.body.image || gameTypeConfig(req.body.serverType || req.body.type || 'PAPER').image, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, env: { EULA: 'TRUE', TYPE: gameTypeConfig(req.body.serverType || req.body.type || 'PAPER').envType, VERSION: req.body.version || 'LATEST', MEMORY: `${Math.floor(memoryMb * 0.85)}M`, ENABLE_RCON: 'true', RCON_PASSWORD: 'minecraft', MOTD: name, CUSTOM_SERVER: req.body.customServerJar ? (String(req.body.customServerJar).startsWith('/') ? req.body.customServerJar : `/data/${req.body.customServerJar}`) : undefined } }, timeout: TIMEOUT * 60 });
-    const panelServer = { id: uuidv4(), agentServerId: created.server.id, name, game: req.body.game || 'minecraft-paper', ownerId: user.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString(), orderId: req.body.orderId || null, planId: req.body.planId || null };
+    const name = req.body.serverName || req.body.nameOnPanel || `${(user.name || 'server').replace(/[^a-zA-Z0-9-]/g, '-')}-${Date.now()}`;
+    const game = req.body.game || cfg.game;
+    const image = req.body.image || cfg.image;
+    const created = await callAgent(node, '/servers', { method: 'POST', body: { name, game, image, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, env: { EULA: 'TRUE', TYPE: cfg.envType, VERSION: req.body.version || 'LATEST', MEMORY: `${Math.floor(memoryMb * 0.85)}M`, ENABLE_RCON: 'true', RCON_PASSWORD: req.body.rconPassword || crypto.randomBytes(12).toString('hex'), MOTD: name, CUSTOM_SERVER: req.body.customServerJar ? (String(req.body.customServerJar).startsWith('/') ? req.body.customServerJar : `/data/${req.body.customServerJar}`) : undefined } }, timeout: TIMEOUT * 60 });
+    const panelServer = { id: uuidv4(), agentServerId: created.server.id, name, game, serverType: serverTypeKey(cfg.envType), ownerId: user.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString(), orderId: req.body.orderId || req.body.checkoutId || null, planId: plan ? plan.id : (req.body.planId || null) };
     db.servers.push(panelServer);
     writeDb(db);
-    res.json({ ok: true, user: { id: user.id, email: user.email, created: !!plainPassword, password: plainPassword }, server: panelServer });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+    res.json({ ok: true, user: { id: user.id, email: user.email, created: !!plainPassword, password: plainPassword }, server: panelServer, loginUrl: process.env.PANEL_LOGIN_URL || '/login' });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+}
+app.post('/api/v1/provision/order', requireApiPermission('provision:server'), handleProvisionOrder);
+app.post('/api/provision/order', requireApiPermission('provision:server'), handleProvisionOrder);
+app.post('/api/admin/provision', requireApiPermission('provision:server'), handleProvisionOrder);
+app.post('/api/v1/provision/user', requireApiPermission('provision:user'), handleProvisionUser);
+app.post('/api/provision/user', requireApiPermission('provision:user'), handleProvisionUser);
+app.post('/api/v1/provision/server', requireApiPermission('provision:server'), handleProvisionOrder);
+app.post('/api/provision/server', requireApiPermission('provision:server'), handleProvisionOrder);
 
 
 
@@ -947,7 +1177,11 @@ app.post('/admin/import-docker', requireLogin, requireAdmin, async (req, res) =>
       cpuLimit: req.body.cpuLimit,
       storageLimitMb: req.body.storageLimitMb,
       port: req.body.port,
-      ipAddress: req.body.ipAddress || node.publicIp || nodeHostFromUrl(node.url)
+      ipAddress: req.body.ipAddress || node.publicIp || nodeHostFromUrl(node.url),
+      image: req.body.image,
+      game: req.body.game,
+      version: req.body.version,
+      recreateManaged: req.body.recreateManaged === 'on'
     }});
     const agentServer = imported.server;
     const existing = db.servers.find(s => s.agentServerId === agentServer.id || s.name === req.body.name);
@@ -955,7 +1189,9 @@ app.post('/admin/import-docker', requireLogin, requireAdmin, async (req, res) =>
       id: existing ? existing.id : uuidv4(),
       agentServerId: agentServer.id,
       name: req.body.name || agentServer.name,
-      game: agentServer.game || `minecraft-${String(req.body.serverType || 'paper').toLowerCase()}`,
+      game: agentServer.game || req.body.game || `minecraft-${String(req.body.serverType || 'paper').toLowerCase()}`,
+      serverType: serverTypeKey(agentServer.env?.TYPE || req.body.serverType || agentServer.game),
+      image: agentServer.image || req.body.image || '',
       ownerId: owner.id,
       nodeId: node.id,
       memoryMb: Number(req.body.memoryMb || agentServer.memoryMb || 2048),
@@ -984,7 +1220,7 @@ app.post('/admin/servers/:id/resources', requireLogin, requireAdmin, async (req,
   server.cpuLimit = Number(req.body.cpuLimit || server.cpuLimit || 1);
   server.storageLimitMb = Number(req.body.storageLimitMb || server.storageLimitMb || 10240);
   if (req.body.port) server.port = Number(req.body.port);
-  try { await callAgent(node, `/servers/${server.agentServerId}/resources`, { method: 'POST', timeout: TIMEOUT * 10, body: { memoryMb: server.memoryMb, cpuLimit: server.cpuLimit, storageLimitMb: server.storageLimitMb, port: server.port } }); }
+  try { await callAgent(node, `/servers/${server.agentServerId}/resources`, { method: 'POST', timeout: TIMEOUT * 10, body: { memoryMb: server.memoryMb, cpuLimit: server.cpuLimit, storageLimitMb: server.storageLimitMb, port: server.port, networkPorts: server.networkPorts || [] } }); }
   catch (e) { req.flash('error', `Saved in panel but agent failed to recreate container: ${e.message}`); }
   writeDb(db);
   req.flash('success', 'Server resources updated.');
@@ -1008,7 +1244,7 @@ app.post('/servers/:id/ftp/disable', requireLogin, async (req, res) => {
   res.redirect(`/servers/${ctx.server.id}#ftp`);
 });
 
-app.get('/admin', requireLogin, requireAdmin, (req, res) => { const db = readDb(); res.render('admin', { title: 'Admin', db }); });
+app.get('/admin', requireLogin, requireAdmin, (req, res) => { const db = readDb(); res.render('admin', { title: 'Admin', db, serverTemplates: SERVER_TEMPLATES }); });
 app.post('/admin/nodes', requireLogin, requireAdmin, (req, res) => {
   const db = readDb();
   db.nodes.push({
@@ -1027,7 +1263,7 @@ app.post('/admin/nodes', requireLogin, requireAdmin, (req, res) => {
 app.post('/admin/users', requireLogin, requireAdmin, async (req, res) => {
   const db = readDb();
   if (db.users.some(u => u.email.toLowerCase() === String(req.body.email).toLowerCase())) { req.flash('error', 'User already exists.'); return res.redirect('/admin'); }
-  db.users.push({ id: uuidv4(), email: req.body.email, name: req.body.name || req.body.email, role: req.body.role || 'user', subdomainSlots: Number(req.body.subdomainSlots || 1), passwordHash: await bcrypt.hash(req.body.password || 'ChangeMe123!', 10), subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() });
+  db.users.push({ id: uuidv4(), email: req.body.email, name: req.body.name || req.body.email, role: req.body.role || 'user', subdomainSlots: Number(req.body.subdomainSlots || 1), portSlots: Number(req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || 0), passwordHash: await bcrypt.hash(req.body.password || 'ChangeMe123!', 10), subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
   writeDb(db); req.flash('success', 'User created.'); res.redirect('/admin');
 });
 
@@ -1036,6 +1272,9 @@ app.post('/admin/users/:id/resources', requireLogin, requireAdmin, (req, res) =>
   const user = db.users.find(u => u.id === req.params.id);
   if (!user) { req.flash('error', 'User not found.'); return res.redirect('/admin#users'); }
   user.subdomainSlots = Math.max(0, Number(req.body.subdomainSlots || 0));
+  user.portSlots = Math.max(0, Number(req.body.portSlots || 0));
+  user.backupSlots = Math.max(0, Number(req.body.backupSlots || 0));
+  user.databaseSlots = Math.max(0, Number(req.body.databaseSlots || 0));
   writeDb(db);
   req.flash('success', 'User resource slots updated.');
   res.redirect('/admin#users');
@@ -1047,13 +1286,13 @@ app.post('/admin/servers', requireLogin, requireAdmin, async (req, res) => {
   const owner = db.users.find(u => u.id === req.body.ownerId);
   if (!node || !owner) { req.flash('error', 'Pick a valid node and owner.'); return res.redirect('/admin'); }
   try {
-    const memoryMb = Number(req.body.memoryMb || 2048);
+    const cfg = gameTypeConfig(req.body.serverType || req.body.type || 'PAPER');
+    const memoryMb = Number(req.body.memoryMb || cfg.defaultMemoryMb || 2048);
     const cpuLimit = Number(req.body.cpuLimit || 1);
-    const storageLimitMb = Number(req.body.storageLimitMb || 10240);
-    const port = Number(req.body.port || 25565);
+    const storageLimitMb = Number(req.body.storageLimitMb || cfg.defaultStorageMb || 10240);
+    const port = Number(req.body.port || cfg.defaultPort || 25565);
     const ipAddress = req.body.ipAddress || node.publicIp || nodeHostFromUrl(node.url);
     const version = req.body.version || 'LATEST';
-    const cfg = gameTypeConfig(req.body.serverType || req.body.type || 'PAPER');
     const image = req.body.image || cfg.image;
     const game = req.body.game || cfg.game;
     const created = await callAgent(node, '/servers', { method: 'POST', body: {
@@ -1071,12 +1310,12 @@ app.post('/admin/servers', requireLogin, requireAdmin, async (req, res) => {
         VERSION: version,
         MEMORY: `${Math.floor(memoryMb * 0.85)}M`,
         ENABLE_RCON: 'true',
-        RCON_PASSWORD: 'minecraft',
+        RCON_PASSWORD: crypto.randomBytes(12).toString('hex'),
         MOTD: req.body.name || 'Minecraft Server',
         CUSTOM_SERVER: req.body.customServerJar ? (String(req.body.customServerJar).startsWith('/') ? req.body.customServerJar : `/data/${req.body.customServerJar}`) : undefined
       }
     }});
-    db.servers.push({ id: uuidv4(), agentServerId: created.server.id, name: req.body.name, game, ownerId: owner.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, subusers: [], networkPorts: [], databases: [], subdomains: [], createdAt: new Date().toISOString() });
+    db.servers.push({ id: uuidv4(), agentServerId: created.server.id, name: req.body.name, game, serverType: serverTypeKey(cfg.envType), ownerId: owner.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
     writeDb(db); req.flash('success', 'Server created on node.');
   } catch (e) { req.flash('error', e.message); }
   res.redirect('/admin');
@@ -1093,6 +1332,8 @@ app.post('/admin/plans', requireLogin, requireAdmin, (req, res) => {
     cpuLimit: Number(req.body.cpuLimit || 1),
     storageLimitMb: Number(req.body.storageLimitMb || 10240),
     extraPorts: Number(req.body.extraPorts || 0),
+    backupSlots: Number(req.body.backupSlots || 0),
+    subdomainSlots: Number(req.body.subdomainSlots || 0),
     databases: Number(req.body.databases || 0),
     createdAt: new Date().toISOString()
   });
@@ -1100,6 +1341,89 @@ app.post('/admin/plans', requireLogin, requireAdmin, (req, res) => {
   req.flash('success', 'Plan saved.');
   res.redirect('/admin#plans');
 });
+
+
+app.post('/admin/nodes/:id/update', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  const node = db.nodes.find(n => n.id === req.params.id);
+  if (!node) { req.flash('error', 'Node not found.'); return res.redirect('/admin#nodes'); }
+  node.name = req.body.name || node.name;
+  node.url = req.body.url || node.url;
+  node.publicIp = req.body.publicIp || node.publicIp || nodeHostFromUrl(node.url || '');
+  node.token = req.body.token || node.token || '';
+  node.location = req.body.location || 'Unknown';
+  node.updatedAt = new Date().toISOString();
+  writeDb(db);
+  req.flash('success', 'Node updated.');
+  res.redirect('/admin#nodes');
+});
+
+app.post('/admin/nodes/:id/delete', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  const inUse = db.servers.some(s => s.nodeId === req.params.id);
+  if (inUse) { req.flash('error', 'Move or delete servers on this node before removing it.'); return res.redirect('/admin#nodes'); }
+  db.nodes = db.nodes.filter(n => n.id !== req.params.id);
+  writeDb(db);
+  req.flash('success', 'Node removed.');
+  res.redirect('/admin#nodes');
+});
+
+async function handleProvisionUpgrade(req, res) {
+  const db = readDb();
+  try {
+    const email = String(req.body.email || req.body.customerEmail || '').trim().toLowerCase();
+    const user = db.users.find(u => String(u.email || '').toLowerCase() === email) || db.users.find(u => u.id === req.body.userId);
+    if (!user) return res.status(404).json({ ok: false, error: 'User not found for upgrade.' });
+    user.portSlots = Math.max(0, Number(user.portSlots || 0) + Number(req.body.portSlots || req.body.extraPorts || 0));
+    user.backupSlots = Math.max(0, Number(user.backupSlots || 0) + Number(req.body.backupSlots || 0));
+    user.subdomainSlots = Math.max(0, Number(user.subdomainSlots || 0) + Number(req.body.subdomainSlots || 0));
+    user.databaseSlots = Math.max(0, Number(user.databaseSlots || 0) + Number(req.body.databaseSlots || req.body.databases || 0));
+    const server = db.servers.find(s => s.id === req.body.serverId || s.agentServerId === req.body.serverId);
+    if (server) {
+      if (req.body.memoryMb) server.memoryMb = Math.max(Number(server.memoryMb || 0), Number(req.body.memoryMb));
+      if (req.body.addMemoryMb) server.memoryMb = Number(server.memoryMb || 0) + Number(req.body.addMemoryMb);
+      if (req.body.cpuLimit) server.cpuLimit = Math.max(Number(server.cpuLimit || 0), Number(req.body.cpuLimit));
+      if (req.body.addCpuLimit) server.cpuLimit = Number(server.cpuLimit || 0) + Number(req.body.addCpuLimit);
+      if (req.body.storageLimitMb) server.storageLimitMb = Math.max(Number(server.storageLimitMb || 0), Number(req.body.storageLimitMb));
+      if (req.body.addStorageMb) server.storageLimitMb = Number(server.storageLimitMb || 0) + Number(req.body.addStorageMb);
+      const node = db.nodes.find(n => n.id === server.nodeId);
+      if (node) {
+        await callAgent(node, `/servers/${server.agentServerId}/resources`, { method: 'POST', timeout: TIMEOUT * 20, body: { memoryMb: server.memoryMb, cpuLimit: server.cpuLimit, storageLimitMb: server.storageLimitMb, port: server.port, networkPorts: server.networkPorts || [] } });
+      }
+    }
+    writeDb(db);
+    res.json({ ok: true, user: { id: user.id, email: user.email, portSlots: user.portSlots, backupSlots: user.backupSlots, subdomainSlots: user.subdomainSlots, databaseSlots: user.databaseSlots }, server: server || null });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+}
+app.post('/api/v1/provision/upgrade', requireApiPermission('provision:upgrade'), handleProvisionUpgrade);
+app.post('/api/provision/upgrade', requireApiPermission('provision:upgrade'), handleProvisionUpgrade);
+app.post('/api/admin/upgrade', requireApiPermission('provision:upgrade'), handleProvisionUpgrade);
+
+async function runScheduledBackups() {
+  const db = readDb();
+  const now = Date.now();
+  let changed = false;
+  for (const server of db.servers) {
+    const sched = server.backupSchedule || {};
+    if (!sched.enabled || !backupScheduleMs(sched.interval)) continue;
+    if (sched.nextRunAt && new Date(sched.nextRunAt).getTime() > now) continue;
+    const node = db.nodes.find(n => n.id === server.nodeId);
+    const owner = db.users.find(u => u.id === server.ownerId) || {};
+    if (!node) continue;
+    try {
+      const existing = await callAgent(node, `/servers/${server.agentServerId}/backups`, { timeout: TIMEOUT * 3 });
+      const used = countBackupItems(existing);
+      const limit = userBackupLimit(owner);
+      if (owner.role === 'admin' || used < limit) await callAgent(node, `/servers/${server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 });
+      sched.lastRunAt = new Date().toISOString();
+      sched.nextRunAt = new Date(Date.now() + backupScheduleMs(sched.interval)).toISOString();
+      server.backupSchedule = sched;
+      changed = true;
+    } catch (e) { console.error('[WARN] Scheduled backup failed for', server.name, e.message); }
+  }
+  if (changed) writeDb(db);
+}
+setInterval(runScheduledBackups, 5 * 60 * 1000);
 
 app.get('/api/health', (req, res) => res.json({ ok: true, brand: BRAND_NAME, time: new Date().toISOString() }));
 app.use((req, res) => res.status(404).render('error', { title: 'Not Found', message: 'Page not found.' }));

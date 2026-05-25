@@ -20,6 +20,8 @@ const PORT = Number(process.env.PORT || 4100);
 const AGENT_NAME = process.env.AGENT_NAME || 'Ubuntu Node';
 const AGENT_LOCATION = process.env.AGENT_LOCATION || 'Unknown';
 const AGENT_TOKEN = process.env.AGENT_TOKEN || 'change-this-agent-token';
+const AGENT_ALLOWED_PANEL_IPS = String(process.env.AGENT_ALLOWED_PANEL_IPS || '').split(',').map(s => s.trim()).filter(Boolean);
+const MAX_AGENT_BODY_SIZE = process.env.MAX_AGENT_BODY_SIZE || '20mb';
 const SERVERS_DIR = process.env.SERVERS_DIR || '/opt/custom-amp/servers';
 const BACKUPS_DIR = process.env.BACKUPS_DIR || '/opt/custom-amp/backups';
 const TMP_DIR = process.env.TMP_DIR || '/opt/custom-amp/tmp';
@@ -74,10 +76,22 @@ function run(cmd, args, timeout = 300000) {
     });
   });
 }
+function clientIp(req) {
+  return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().replace(/^::ffff:/, '');
+}
+function safeEqual(a, b) {
+  const aa = Buffer.from(String(a || ''));
+  const bb = Buffer.from(String(b || ''));
+  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
+}
 function auth(req, res, next) {
-  const header = req.headers.authorization || '';
+  const ip = clientIp(req);
+  if (AGENT_ALLOWED_PANEL_IPS.length && !AGENT_ALLOWED_PANEL_IPS.includes(ip)) {
+    return res.status(403).json({ error: 'Panel IP not allowed for this node.' });
+  }
+  const header = String(req.headers.authorization || '');
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (token !== AGENT_TOKEN) return res.status(401).json({ error: 'Unauthorized agent token.' });
+  if (!safeEqual(token, AGENT_TOKEN)) return res.status(401).json({ error: 'Unauthorized agent token.' });
   next();
 }
 async function inspectContainer(containerName) {
@@ -105,6 +119,68 @@ async function containerStats(containerName) {
     return { error: e.message, cpuPercent: '0%', memoryUsage: '0B / 0B', memoryPercent: '0%' };
   }
 }
+
+function parsePercent(value) {
+  const n = Number(String(value || '0').replace('%', '').trim());
+  return Number.isFinite(n) ? n : 0;
+}
+function parseMemoryUsageBytes(value) {
+  const first = String(value || '').split('/')[0].trim();
+  const m = first.match(/^([0-9.]+)\s*([KMGT]?i?B|B)?$/i);
+  if (!m) return 0;
+  const num = Number(m[1]);
+  const unit = String(m[2] || 'B').toUpperCase();
+  const mult = unit.startsWith('K') ? 1024 : unit.startsWith('M') ? 1024**2 : unit.startsWith('G') ? 1024**3 : unit.startsWith('T') ? 1024**4 : 1;
+  return Math.round(num * mult);
+}
+function resourceUpgradeHint(server, type) {
+  if (type === 'storage') return `Upgrade storage above ${server.storageLimitMb || 0} MB or delete files/backups.`;
+  if (type === 'memory') return `Upgrade RAM above ${server.memoryMb || 0} MB.`;
+  if (type === 'cpu') return `Upgrade CPU above ${server.cpuLimit || 1} core(s) or reduce server load.`;
+  return 'Upgrade this server resources.';
+}
+async function stopForResourceLimit(server, type, message, stats) {
+  const now = new Date().toISOString();
+  const db = readDb();
+  const index = db.servers.findIndex(s => s.id === server.id);
+  if (index === -1) return;
+  const current = db.servers[index];
+  current.resourceStop = {
+    active: true,
+    type,
+    message,
+    upgradeHint: resourceUpgradeHint(current, type),
+    stoppedAt: now,
+    stats: stats || null
+  };
+  current.lastStopReason = current.resourceStop.message;
+  db.servers[index] = current;
+  writeDb(db);
+  try { await docker(['stop', current.containerName], 120000); } catch {}
+}
+async function enforceResourceLimits(server) {
+  const state = await inspectContainer(server.containerName);
+  if (!state.Running) return;
+  const stats = await serverStats(server);
+  const storageLimitMb = Number(server.storageLimitMb || 0);
+  const usedBytes = Number(stats.storage && stats.storage.usedBytes || 0);
+  const storageLimitBytes = storageLimitMb * 1024 * 1024;
+  if (storageLimitBytes && usedBytes >= storageLimitBytes) {
+    const usedMb = Math.ceil(usedBytes / 1024 / 1024);
+    return stopForResourceLimit(server, 'storage', `Stopped because storage is full: ${usedMb} MB used of ${storageLimitMb} MB.`, stats);
+  }
+  const memPercent = parsePercent(stats.docker && stats.docker.memoryPercent);
+  if (memPercent >= Number(process.env.RESOURCE_STOP_MEMORY_PERCENT || 99)) {
+    return stopForResourceLimit(server, 'memory', `Stopped because RAM usage reached ${memPercent.toFixed(1)}% of the ${server.memoryMb || 0} MB limit.`, stats);
+  }
+  const cpuPercent = parsePercent(stats.docker && stats.docker.cpuPercent);
+  const cpuStopPercent = Number(process.env.RESOURCE_STOP_CPU_PERCENT || 98);
+  const cpuLimit = Number(server.cpuLimit || 1);
+  if (cpuPercent >= cpuStopPercent * Math.max(cpuLimit, 1)) {
+    return stopForResourceLimit(server, 'cpu', `Stopped because CPU usage reached ${cpuPercent.toFixed(1)}%, which is over the allowed CPU limit.`, stats);
+  }
+}
+
 async function folderUsageBytes(folder) {
   try {
     const out = await run('du', ['-sb', folder], 60000);
@@ -207,6 +283,19 @@ function normalizeServerEnv(server) {
     delete env.RCON_PASSWORD;
     env.RUST_SERVER_NAME = env.RUST_SERVER_NAME || server.name || 'Rust Server';
   }
+  if (isTerrariaServer(server) || isValheimServer(server) || isFactorioServer(server)) {
+    delete env.EULA;
+    delete env.ENABLE_RCON;
+    delete env.RCON_PASSWORD;
+    delete env.TYPE;
+    delete env.MEMORY;
+    delete env.MOTD;
+    if (isValheimServer(server)) {
+      env.SERVER_NAME = env.SERVER_NAME || server.name || 'Valheim Server';
+      env.WORLD_NAME = env.WORLD_NAME || 'Dedicated';
+      env.SERVER_PASS = env.SERVER_PASS || crypto.randomBytes(5).toString('hex');
+    }
+  }
   return env;
 }
 function isProxyServer(server) {
@@ -220,9 +309,27 @@ function isRustServer(server) {
   const game = String(server.game || '').toLowerCase();
   return game === 'rust' || game.includes('rust') || image.includes('rust');
 }
+function isTerrariaServer(server) {
+  const image = String(server.image || '').toLowerCase();
+  const game = String(server.game || '').toLowerCase();
+  return game.includes('terraria') || image.includes('terraria');
+}
+function isValheimServer(server) {
+  const image = String(server.image || '').toLowerCase();
+  const game = String(server.game || '').toLowerCase();
+  return game.includes('valheim') || image.includes('valheim');
+}
+function isFactorioServer(server) {
+  const image = String(server.image || '').toLowerCase();
+  const game = String(server.game || '').toLowerCase();
+  return game.includes('factorio') || image.includes('factorio');
+}
 function mainContainerPort(server) {
   if (isProxyServer(server)) return 25577;
   if (isRustServer(server)) return 28015;
+  if (isTerrariaServer(server)) return 7777;
+  if (isValheimServer(server)) return 2456;
+  if (isFactorioServer(server)) return 34197;
   return 25565;
 }
 function buildDockerArgs(server) {
@@ -231,6 +338,9 @@ function buildDockerArgs(server) {
   const args = ['run', '-d', '--name', server.containerName, '--restart', 'unless-stopped', '-m', `${server.memoryMb}m`, '--cpus', String(server.cpuLimit || 1), '-v', `${server.folder}:/data`];
   if (isProxyServer(server)) args.push('-v', `${server.folder}:/server`);
   if (isRustServer(server)) args.push('-v', `${server.folder}:/steamcmd/rust`);
+  if (isTerrariaServer(server)) args.push('-v', `${server.folder}:/root/.local/share/Terraria/Worlds`);
+  if (isValheimServer(server)) args.push('-v', `${server.folder}:/config`);
+  if (isFactorioServer(server)) args.push('-v', `${server.folder}:/factorio`);
 
   const usedBindings = new Set();
   function addBinding(publicPort, containerPort, protocol = 'tcp') {
@@ -246,8 +356,14 @@ function buildDockerArgs(server) {
   if (isRustServer(server)) {
     addBinding(server.port || 28015, 28015, 'udp');
     addBinding(server.port || 28015, 28015, 'tcp');
+  } else if (isValheimServer(server)) {
+    addBinding(server.port || 2456, 2456, 'udp');
+    addBinding(Number(server.port || 2456) + 1, 2457, 'udp');
+    addBinding(Number(server.port || 2456) + 2, 2458, 'udp');
+  } else if (isFactorioServer(server)) {
+    addBinding(server.port || 34197, 34197, 'udp');
   } else {
-    addBinding(server.port || 25565, mainPort, 'tcp');
+    addBinding(server.port || mainPort, mainPort, 'tcp');
   }
 
   for (const p of (server.networkPorts || [])) {
@@ -315,8 +431,8 @@ function serverSettings(server) {
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false, referrerPolicy: { policy: 'same-origin' } }));
 app.use(agentLimiter);
 app.use(morgan('dev'));
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: MAX_AGENT_BODY_SIZE }));
+app.use(express.urlencoded({ extended: true, limit: MAX_AGENT_BODY_SIZE }));
 
 app.get('/health', auth, async (req, res) => {
   let dockerOk = true;
@@ -341,7 +457,7 @@ app.post('/servers', auth, async (req, res) => {
   const containerName = `amp-${safeName(name)}-${serverId.slice(0, 8)}`;
   const env = Object.assign(defaultEnv(memoryMb, name), req.body.env || {});
 
-  const server = { id: serverId, name, image, port, ipAddress, memoryMb, cpuLimit, storageLimitMb, containerName, folder, env, networkPorts: req.body.networkPorts || [], game: req.body.game || 'minecraft-paper', createdAt: new Date().toISOString() };
+  const server = { id: serverId, name, image, port, ipAddress, memoryMb, cpuLimit, storageLimitMb, containerName, folder, env, networkPorts: req.body.networkPorts || [], game: req.body.game || 'minecraft-paper', resourceStop: null, createdAt: new Date().toISOString() };
 
   try {
     await docker(buildDockerArgs(server));
@@ -364,12 +480,16 @@ app.get('/servers/:id', auth, async (req, res) => {
   const server = getServer(req.params.id);
   if (!server) return res.status(404).json({ error: 'Server not found.' });
   const state = await inspectContainer(server.containerName);
+  if (state && state.OOMKilled && !(server.resourceStop && server.resourceStop.active)) {
+    await stopForResourceLimit(server, 'memory', `Stopped because the server ran out of RAM and Docker killed it. Current RAM limit is ${server.memoryMb || 0} MB.`, await serverStats(server));
+  }
+  const latestServer = getServer(req.params.id) || server;
   let logs = '';
   try {
-    const out = await docker(['logs', '--tail', String(MAX_CONSOLE_LINES), server.containerName]);
+    const out = await docker(['logs', '--tail', String(MAX_CONSOLE_LINES), latestServer.containerName]);
     logs = cleanConsoleLogs(`${out.stdout || ''}${out.stderr || ''}`);
   } catch (e) { logs = e.message; }
-  res.json({ server, state, stats: await serverStats(server), settings: serverSettings(server), logs });
+  res.json({ server: latestServer, state, stats: await serverStats(latestServer), settings: serverSettings(latestServer), logs });
 });
 
 app.get('/servers/:id/logs', auth, async (req, res) => {
@@ -385,18 +505,36 @@ app.get('/servers/:id/logs', auth, async (req, res) => {
 app.get('/servers/:id/stats', auth, async (req, res) => {
   const server = getServer(req.params.id);
   if (!server) return res.status(404).json({ error: 'Server not found.' });
-  try { res.json({ stats: await serverStats(server), state: await inspectContainer(server.containerName), server }); }
+  try {
+    const state = await inspectContainer(server.containerName);
+    if (state && state.OOMKilled && !(server.resourceStop && server.resourceStop.active)) {
+      await stopForResourceLimit(server, 'memory', `Stopped because the server ran out of RAM and Docker killed it. Current RAM limit is ${server.memoryMb || 0} MB.`, await serverStats(server));
+    }
+    const latestServer = getServer(req.params.id) || server;
+    res.json({ stats: await serverStats(latestServer), state, server: latestServer });
+  }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/servers/:id/start', auth, async (req, res) => {
-  const server = getServer(req.params.id);
-  if (!server) return res.status(404).json({ error: 'Server not found.' });
+  const db = readDb();
+  const index = db.servers.findIndex(s => s.id === req.params.id);
+  if (index === -1) return res.status(404).json({ error: 'Server not found.' });
+  const server = db.servers[index];
+  server.resourceStop = null;
+  server.lastStopReason = null;
+  db.servers[index] = server;
+  writeDb(db);
   try { await docker(['start', server.containerName]); res.json({ ok: true }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/servers/:id/stop', auth, async (req, res) => {
-  const server = getServer(req.params.id);
-  if (!server) return res.status(404).json({ error: 'Server not found.' });
+  const db = readDb();
+  const index = db.servers.findIndex(s => s.id === req.params.id);
+  if (index === -1) return res.status(404).json({ error: 'Server not found.' });
+  const server = db.servers[index];
+  server.lastStopReason = req.body && req.body.reason ? String(req.body.reason).slice(0, 300) : 'Stopped manually from the panel.';
+  db.servers[index] = server;
+  writeDb(db);
   try { await docker(['stop', server.containerName]); res.json({ ok: true }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/servers/:id/restart', auth, async (req, res) => {
@@ -718,7 +856,7 @@ app.get('/docker/containers', auth, async (req, res) => {
       let inspect = null;
       try { inspect = JSON.parse((await docker(['inspect', row.ID], 60000)).stdout)[0]; } catch {}
       const mounts = (inspect && inspect.Mounts ? inspect.Mounts : []).map(m => ({ source: m.Source, destination: m.Destination }));
-      const dataMount = mounts.find(m => m.destination === '/data');
+      const dataMount = mounts.find(m => ['/data','/server','/config','/factorio','/steamcmd/rust','/root/.local/share/Terraria/Worlds'].includes(m.destination)) || mounts[0];
       const ports = [];
       const rawPorts = inspect && inspect.NetworkSettings && inspect.NetworkSettings.Ports ? inspect.NetworkSettings.Ports : {};
       for (const [containerPort, bindings] of Object.entries(rawPorts)) {
@@ -747,8 +885,9 @@ app.post('/docker/import', auth, async (req, res) => {
     if (!containerRef) return res.status(400).json({ error: 'Container is required.' });
     const inspect = JSON.parse((await docker(['inspect', containerRef], 60000)).stdout)[0];
     const containerName = String(inspect.Name || '').replace(/^\//, '');
-    const dataMount = (inspect.Mounts || []).find(m => m.Destination === '/data');
-    if (!dataMount) return res.status(400).json({ error: 'Cannot import: no /data mount.' });
+    const preferredMounts = ['/data', '/server', '/config', '/factorio', '/steamcmd/rust', '/root/.local/share/Terraria/Worlds'];
+    const dataMount = (inspect.Mounts || []).find(m => preferredMounts.includes(m.Destination)) || (inspect.Mounts || [])[0];
+    if (!dataMount) return res.status(400).json({ error: 'Cannot import: no usable bind mount/volume found.' });
     const rawPorts = inspect.NetworkSettings && inspect.NetworkSettings.Ports ? inspect.NetworkSettings.Ports : {};
     function findPort(containerPort, proto='tcp') { const b = rawPorts[`${containerPort}/${proto}`]; return b && b[0] ? Number(b[0].HostPort) : null; }
     const publicPort = Number(req.body.port || findPort(25565, 'tcp') || findPort(25577, 'tcp') || findPort(28015, 'tcp') || 25565);
@@ -785,10 +924,13 @@ app.post('/docker/import', auth, async (req, res) => {
       createdAt: new Date().toISOString()
     };
     const db = readDb();
-    const existing = db.servers.find(s => s.containerName === containerName || s.folder === server.folder);
+    const existing = db.servers.find(s => s.containerName === containerName || s.containerId === inspect.Id || s.folder === server.folder);
     if (existing) Object.assign(existing, server, { id: existing.id }); else db.servers.push(server);
+    if (req.body.recreateManaged === true || req.body.recreateManaged === 'true' || req.body.recreateManaged === 'on') {
+      await recreateContainer(existing || server);
+    }
     writeDb(db);
-    res.json({ ok: true, server: existing || server });
+    res.json({ ok: true, server: existing || server, recreated: !!req.body.recreateManaged });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -800,7 +942,19 @@ app.post('/servers/:id/resources', auth, async (req, res) => {
   server.memoryMb = Number(req.body.memoryMb || server.memoryMb || 2048);
   server.cpuLimit = Number(req.body.cpuLimit || server.cpuLimit || 1);
   server.storageLimitMb = Number(req.body.storageLimitMb || server.storageLimitMb || 10240);
+  server.resourceStop = null;
+  server.lastStopReason = null;
   if (req.body.port) server.port = Number(req.body.port);
+  if (Array.isArray(req.body.networkPorts)) {
+    server.networkPorts = req.body.networkPorts.map(p => ({
+      port: Number(p.port || p.publicPort),
+      publicPort: Number(p.publicPort || p.port),
+      containerPort: Number(p.containerPort || p.port || p.publicPort),
+      type: p.type || p.protocol || 'tcp',
+      protocol: p.protocol || p.type || 'tcp',
+      notes: p.notes || ''
+    })).filter(p => p.publicPort && p.containerPort);
+  }
   db.servers[index] = server;
   writeDb(db);
   try { await recreateContainer(server); res.json({ ok: true, server, recreated: true }); }
@@ -893,5 +1047,17 @@ app.post('/servers/:id/ftp/disable', auth, async (req, res) => {
   try { await recreateSftpContainer(); res.json({ ok: true, enabled: false }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+
+async function resourceMonitorTick() {
+  const db = readDb();
+  for (const server of db.servers || []) {
+    try { await enforceResourceLimits(server); }
+    catch (e) { console.error('[WARN] Resource monitor failed for', server.name, e.message); }
+  }
+}
+const RESOURCE_MONITOR_INTERVAL_MS = Number(process.env.RESOURCE_MONITOR_INTERVAL_MS || 20000);
+setInterval(resourceMonitorTick, RESOURCE_MONITOR_INTERVAL_MS);
+setTimeout(resourceMonitorTick, 5000);
 
 app.listen(PORT, () => console.log(`${AGENT_NAME} agent running on port ${PORT}`));

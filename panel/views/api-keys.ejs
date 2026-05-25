@@ -43,7 +43,11 @@
     <p class="muted">Use the key as a bearer token.</p>
     <pre class="console small-console">curl -H "Authorization: Bearer YOUR_API_KEY" \
   http://your-panel-url/api/v1/servers/SERVER_ID/logs</pre>
-    <p class="muted small">API routes currently support start, stop, restart, create backup, download backup, read console logs, and send commands.</p>
+    <p class="muted small">Website checkout keys should include <strong>Website: create users</strong> and <strong>Website: create servers</strong>. Supported provisioning endpoints: <code>/api/v1/provision/order</code>, <code>/api/provision/order</code>, and <code>/api/admin/provision</code>.</p>
+    <pre class="console small-console">curl -X POST http://your-panel-url/api/v1/provision/order \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"customer@example.com","name":"Customer","serverName":"survival","serverType":"PAPER","memoryMb":2048,"cpuLimit":1,"storageLimitMb":10240,"port":25565}'</pre>
   </div>
 </section>
 

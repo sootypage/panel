@@ -41,9 +41,22 @@
   </div>
   <div class="card">
     <h2>Nodes</h2>
-    <table><thead><tr><th>Name</th><th>URL</th><th>Public IP</th><th>Location</th></tr></thead><tbody>
-      <% db.nodes.forEach(n => { %><tr><td><%= n.name %></td><td><%= n.url %></td><td><%= n.publicIp || '' %></td><td><%= n.location %></td></tr><% }) %>
+    <table><thead><tr><th>Name</th><th>URL</th><th>Public IP</th><th>Location</th><th>Status data</th><th>Actions</th></tr></thead><tbody>
+      <% db.nodes.forEach(n => { %>
+        <tr>
+          <form method="post" action="/admin/nodes/<%= n.id %>/update">
+            <td><input name="name" value="<%= n.name %>"></td>
+            <td><input name="url" value="<%= n.url %>"></td>
+            <td><input name="publicIp" value="<%= n.publicIp || '' %>"></td>
+            <td><input name="location" value="<%= n.location || 'Unknown' %>"></td>
+            <td class="small">Last online: <%= n.lastOnlineAt ? new Date(n.lastOnlineAt).toLocaleString() : 'Never' %><br>Last down: <%= n.lastDownAt ? new Date(n.lastDownAt).toLocaleString() : 'Never' %></td>
+            <td class="actions-cell"><input name="token" type="password" placeholder="New token optional"><button class="small-btn">Save</button>
+          </form>
+          <form method="post" action="/admin/nodes/<%= n.id %>/delete" onsubmit="return confirm('Remove this node? You must move/delete servers first.')"><button class="danger small-btn">Remove</button></form></td>
+        </tr>
+      <% }) %>
     </tbody></table>
+    <p class="muted small"><a href="/status">Open public status page</a> to see uptime, downtime, location, latency, and servers per node.</p>
   </div>
 </section>
 
@@ -56,19 +69,28 @@
       <label>Password</label><input name="password" type="text" required>
       <label>Role</label><select name="role"><option value="user">User</option><option value="admin">Admin</option></select>
       <label>Subdomain slots</label><input name="subdomainSlots" type="number" value="1" min="0">
+      <label>Extra port slots</label><input name="portSlots" type="number" value="0" min="0">
+      <label>Backup slots</label><input name="backupSlots" type="number" value="1" min="0">
+      <label>Database slots</label><input name="databaseSlots" type="number" value="0" min="0">
       <button class="primary span">Create user</button>
     </form>
   </div>
   <div class="card">
     <h2>Users</h2>
-    <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Subdomain slots</th><th>Actions</th></tr></thead><tbody>
+    <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Subdomain slots</th><th>Port slots</th><th>Backup slots</th><th>Database slots</th><th>Actions</th></tr></thead><tbody>
       <% db.users.forEach(u => { %>
         <tr>
           <td><%= u.email %></td><td><%= u.name %></td><td><%= u.role %></td>
           <td><%= u.subdomainSlots || (u.role === 'admin' ? 999 : 1) %></td>
+          <td><%= u.portSlots || (u.role === 'admin' ? 999 : 0) %></td>
+          <td><%= u.backupSlots || (u.role === 'admin' ? 999 : 1) %></td>
+          <td><%= u.databaseSlots || (u.role === 'admin' ? 999 : 0) %></td>
           <td>
             <form method="post" action="/admin/users/<%= u.id %>/resources" class="inline-form-wide">
-              <input name="subdomainSlots" type="number" min="0" value="<%= u.subdomainSlots || (u.role === 'admin' ? 999 : 1) %>">
+              <input name="subdomainSlots" type="number" min="0" value="<%= u.subdomainSlots || (u.role === 'admin' ? 999 : 1) %>" title="Subdomain slots">
+              <input name="portSlots" type="number" min="0" value="<%= u.portSlots || (u.role === 'admin' ? 999 : 0) %>" title="Extra port slots">
+              <input name="backupSlots" type="number" min="0" value="<%= u.backupSlots || (u.role === 'admin' ? 999 : 1) %>" title="Backup slots">
+              <input name="databaseSlots" type="number" min="0" value="<%= u.databaseSlots || (u.role === 'admin' ? 999 : 0) %>" title="Database slots">
               <button class="small-btn">Save slots</button>
             </form>
           </td>
@@ -86,27 +108,20 @@
       <label>Owner</label><select name="ownerId" required><% db.users.forEach(u => { %><option value="<%= u.id %>"><%= u.email %></option><% }) %></select>
       <label>Node</label><select name="nodeId" required><% db.nodes.forEach(n => { %><option value="<%= n.id %>"><%= n.name %> - <%= n.url %></option><% }) %></select>
       <label>Server type</label>
-      <select name="serverType">
-        <option value="PAPER">Paper</option>
-        <option value="PURPUR">Purpur</option>
-        <option value="FABRIC">Fabric</option>
-        <option value="FORGE">Forge</option>
-        <option value="NEOFORGE">NeoForge</option>
-        <option value="VANILLA">Vanilla</option>
-        <option value="VELOCITY">Velocity</option>
-        <option value="BUNGEECORD">BungeeCord</option>
-        <option value="WATERFALL">Waterfall</option>
-        <option value="RUST">Rust</option>
-        <option value="CUSTOM">Custom JAR</option>
+      <select name="serverType" id="serverTypeSelect">
+        <% (serverTemplates || []).forEach(t => { %>
+          <option value="<%= t.key %>" data-game="<%= t.game %>" data-image="<%= t.image %>" data-port="<%= t.defaultPort %>" data-ram="<%= t.defaultMemoryMb %>" data-storage="<%= t.defaultStorageMb %>" data-addons="<%= t.addons %>"><%= t.label %> — <%= t.category %></option>
+        <% }) %>
       </select>
-      <label>Game key</label><input name="game" placeholder="Leave blank to auto set from type">
-      <label>Docker image</label><input name="image" placeholder="Leave blank to auto set from type">
+      <div></div><p class="muted small" id="serverTypeHint">Pick a template and the panel will fill the image, port, RAM, storage, and add-on type.</p>
+      <label>Game key</label><input name="game" id="gameInput" placeholder="Leave blank to auto set from type">
+      <label>Docker image</label><input name="image" id="imageInput" placeholder="Leave blank to auto set from type">
       <label>Minecraft / game version</label><input name="version" value="LATEST">
-      <label>Memory limit MB</label><input name="memoryMb" type="number" value="2048">
+      <label>Memory limit MB</label><input name="memoryMb" id="memoryInput" type="number" value="2048">
       <label>CPU limit</label><input name="cpuLimit" type="number" step="0.25" value="1">
-      <label>Storage limit MB</label><input name="storageLimitMb" type="number" value="10240">
+      <label>Storage limit MB</label><input name="storageLimitMb" id="storageInput" type="number" value="10240">
       <label>Server IP</label><input name="ipAddress" placeholder="Leave blank to use node public IP">
-      <label>Public port</label><input name="port" type="number" value="25565">
+      <label>Public port</label><input name="port" id="portInput" type="number" value="25565">
       <button class="primary span">Create server</button>
     </form>
   </div>
@@ -138,18 +153,31 @@
 <section id="tab-import" class="tab-panel">
   <div class="card">
     <h2>Import existing Docker container</h2>
-    <p class="muted">Import old Docker servers into the panel without deleting their files. The container needs a /data mount.</p>
+    <p class="muted">Import old Docker servers into the panel without deleting their files. The importer now scans ports, mounts, image, environment, and can show containers from the selected node.</p>
+    <div class="notice-card">
+      <strong>Step 1:</strong> select a node and click scan. <strong>Step 2:</strong> copy a container name into the import form. <strong>Step 3:</strong> choose owner/resources and import.
+    </div>
+    <div class="button-row mt-12">
+      <select id="importScanNode"><% db.nodes.forEach(n => { %><option value="<%= n.id %>"><%= n.name %> - <%= n.location || 'Unknown' %></option><% }) %></select>
+      <button type="button" class="primary" id="scanDockerBtn">Scan node containers</button>
+    </div>
+    <div id="dockerScanResults" class="docker-scan-results muted small mt-12">No scan yet.</div>
+    <hr class="soft-sep">
     <form method="post" action="/admin/import-docker" class="form two-col">
-      <label>Node</label><select name="nodeId"><% db.nodes.forEach(n => { %><option value="<%= n.id %>"><%= n.name %> - <%= n.url %></option><% }) %></select>
+      <label>Node</label><select name="nodeId" id="importNodeSelect"><% db.nodes.forEach(n => { %><option value="<%= n.id %>"><%= n.name %> - <%= n.url %></option><% }) %></select>
       <label>Owner</label><select name="ownerId"><% db.users.forEach(u => { %><option value="<%= u.id %>"><%= u.email %></option><% }) %></select>
-      <label>Container name or ID</label><input name="container" required placeholder="amp-warsmp-xxxx or c85336af2695">
-      <label>Panel server name</label><input name="name" required placeholder="warsmp">
-      <label>Server type</label><select name="serverType"><% ['PAPER','PURPUR','FABRIC','FORGE','NEOFORGE','VANILLA','VELOCITY','BUNGEECORD','WATERFALL','RUST','CUSTOM'].forEach(t => { %><option value="<%= t %>"><%= t %></option><% }) %></select>
+      <label>Container name or ID</label><input name="container" id="importContainerInput" required placeholder="amp-warsmp-xxxx or c85336af2695">
+      <label>Panel server name</label><input name="name" id="importNameInput" required placeholder="warsmp">
+      <label>Server type</label><select name="serverType"><% (serverTemplates || []).forEach(t => { %><option value="<%= t.key %>"><%= t.label %></option><% }) %></select>
+      <label>Game key</label><input name="game" placeholder="Auto-detected if blank">
+      <label>Docker image</label><input name="image" placeholder="Keep existing image if blank">
+      <label>Version</label><input name="version" placeholder="Auto-detected / LATEST">
       <label>Public IP</label><input name="ipAddress" placeholder="Leave blank to use node public IP">
-      <label>Main public port</label><input name="port" type="number" placeholder="25565 / 25566 / 28015">
+      <label>Main public port</label><input name="port" type="number" placeholder="Auto-detects first useful port">
       <label>RAM MB</label><input name="memoryMb" type="number" value="2048">
       <label>CPU</label><input name="cpuLimit" type="number" step="0.25" value="1">
       <label>Storage MB</label><input name="storageLimitMb" type="number" value="10240">
+      <label>Managed recreate</label><label class="check-card"><input name="recreateManaged" type="checkbox"> <span>Recreate container with panel limits and same data mount after import</span><small>Leave off to only link the existing container.</small></label>
       <button class="primary span">Import container</button>
     </form>
   </div>
@@ -165,11 +193,13 @@
       <label>CPU</label><input name="cpuLimit" type="number" step="0.25" value="2">
       <label>Storage MB</label><input name="storageLimitMb" type="number" value="20480">
       <label>Included extra ports</label><input name="extraPorts" type="number" value="0">
+      <label>Included backup slots</label><input name="backupSlots" type="number" value="1">
+      <label>Included subdomain slots</label><input name="subdomainSlots" type="number" value="0">
       <label>Included databases</label><input name="databases" type="number" value="0">
       <button class="primary span">Save plan</button>
     </form>
-    <table><thead><tr><th>Name</th><th>RAM</th><th>CPU</th><th>Storage</th><th>Ports</th><th>Databases</th></tr></thead><tbody>
-      <% (db.plans || []).forEach(p => { %><tr><td><%= p.name %></td><td><%= p.memoryMb %> MB</td><td><%= p.cpuLimit %></td><td><%= p.storageLimitMb %> MB</td><td><%= p.extraPorts %></td><td><%= p.databases %></td></tr><% }) %>
+    <table><thead><tr><th>Name</th><th>RAM</th><th>CPU</th><th>Storage</th><th>Ports</th><th>Backups</th><th>Subdomains</th><th>Databases</th></tr></thead><tbody>
+      <% (db.plans || []).forEach(p => { %><tr><td><%= p.name %></td><td><%= p.memoryMb %> MB</td><td><%= p.cpuLimit %></td><td><%= p.storageLimitMb %> MB</td><td><%= p.extraPorts %></td><td><%= p.backupSlots || 0 %></td><td><%= p.subdomainSlots || 0 %></td><td><%= p.databases %></td></tr><% }) %>
     </tbody></table>
   </div>
 </section>
@@ -179,7 +209,7 @@
     <h2>API / Website linking</h2>
     <p class="muted">Create an admin API key with <strong>Website: create users</strong> and <strong>Website: create servers</strong> permissions, then your website can call the provision endpoint after checkout.</p>
     <div class="codebox">POST /api/v1/provision/order<br>Authorization: Bearer YOUR_API_KEY</div>
-    <p class="muted small">Example JSON: email, name, serverName, planId, memoryMb, cpuLimit, storageLimitMb, port, version, orderId.</p>
+    <p class="muted small">Example JSON: email, name, serverName, planId, memoryMb, cpuLimit, storageLimitMb, port, serverType, version, orderId. Compatible endpoints: <code>/api/v1/provision/order</code>, <code>/api/provision/order</code>, and <code>/api/admin/provision</code>. Upgrades use <code>/api/v1/provision/upgrade</code> with backupSlots, subdomainSlots, portSlots, databaseSlots, addMemoryMb, addStorageMb, or addCpuLimit.</p>
     <a class="button primary" href="/api-keys">Manage API Keys</a>
   </div>
   <div class="card">
@@ -198,13 +228,18 @@
         <li><span>Helmet security headers</span><span>Enabled</span></li>
         <li><span>Login rate limit</span><span>20 / 15 min</span></li>
         <li><span>API rate limit</span><span>120 / min</span></li>
-        <li><span>Secure cookies</span><span>Set COOKIE_SECURE=true when using HTTPS</span></li>
+        <li><span>Write action rate limit</span><span>60 / min</span></li>
+        <li><span>API key storage</span><span>SHA-256 hashed, full key shown once</span></li>
+        <li><span>API CORS</span><span>Use API_CORS_ORIGIN=https://your-shop.com in production</span></li>
+        <li><span>Secure cookies</span><span>Set COOKIE_SECURE=true when HTTPS proxy is working</span></li>
       </ul>
     </div>
     <div class="card">
       <h2>Node security checklist</h2>
       <ul class="installed-list">
         <li><span>Use a long AGENT_TOKEN</span><span>32+ chars</span></li>
+        <li><span>Timing-safe token checks</span><span>Enabled in node code</span></li>
+        <li><span>Optional panel IP allowlist</span><span>AGENT_ALLOWED_PANEL_IPS</span></li>
         <li><span>Do not expose port 4100 publicly unless needed</span><span>Use firewall</span></li>
         <li><span>Allow only panel IP to node port</span><span>Recommended</span></li>
         <li><span>Use HTTPS/reverse proxy for panel</span><span>Recommended</span></li>
@@ -223,4 +258,44 @@ function activateTab(name) {
 document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
 activateTab((location.hash || '#overview').replace('#',''));
 </script>
+
+<script>
+(function(){
+  const type = document.getElementById('serverTypeSelect');
+  if (type) {
+    const apply = () => {
+      const o = type.options[type.selectedIndex];
+      const setIfBlank = (id, val) => { const el = document.getElementById(id); if (el && (!el.value || el.dataset.autofilled === '1')) { el.value = val || ''; el.dataset.autofilled = '1'; } };
+      setIfBlank('gameInput', o.dataset.game);
+      setIfBlank('imageInput', o.dataset.image);
+      setIfBlank('portInput', o.dataset.port);
+      setIfBlank('memoryInput', o.dataset.ram);
+      setIfBlank('storageInput', o.dataset.storage);
+      const hint = document.getElementById('serverTypeHint');
+      if (hint) hint.textContent = `${o.textContent.trim()} uses ${o.dataset.image}, port ${o.dataset.port}, and add-ons: ${o.dataset.addons || 'none'}.`;
+    };
+    type.addEventListener('change', apply); apply();
+  }
+  const scan = document.getElementById('scanDockerBtn');
+  if (scan) scan.addEventListener('click', async () => {
+    const nodeId = document.getElementById('importScanNode').value;
+    const out = document.getElementById('dockerScanResults');
+    out.textContent = 'Scanning containers...';
+    try {
+      const r = await fetch(`/admin/import-docker/containers?nodeId=${encodeURIComponent(nodeId)}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Scan failed');
+      const rows = (data.containers || []).map(c => `<tr><td><button type="button" class="small-btn pick-container" data-name="${c.name}">Use</button></td><td>${c.name}</td><td>${c.image}</td><td>${c.state || ''}<br>${c.status || ''}</td><td>${(c.ports||[]).map(p => `${p.publicPort}->${p.containerPort}/${p.protocol}`).join('<br>') || 'None'}</td><td>${c.dataPath || 'No /data mount'}</td><td>${c.imported ? 'Already imported' : (c.canImport ? 'Ready' : 'Needs mount')}</td></tr>`).join('');
+      out.innerHTML = `<table><thead><tr><th></th><th>Name</th><th>Image</th><th>Status</th><th>Ports</th><th>Data path</th><th>Import</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No containers found.</td></tr>'}</tbody></table>`;
+      out.querySelectorAll('.pick-container').forEach(btn => btn.addEventListener('click', () => {
+        document.getElementById('importContainerInput').value = btn.dataset.name;
+        const name = btn.dataset.name.replace(/^amp-/, '').replace(/-[a-f0-9]{8}$/i, '');
+        if (!document.getElementById('importNameInput').value) document.getElementById('importNameInput').value = name;
+        document.getElementById('importNodeSelect').value = nodeId;
+      }));
+    } catch (e) { out.textContent = e.message; }
+  });
+})();
+</script>
+
 <%- include('layout-bottom') %>

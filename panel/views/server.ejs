@@ -1,4 +1,5 @@
 <%- include('layout-top', { title }) %>
+<% const addInfo = addonInfo || { kind: 'plugin', label: 'Plugins', folder: 'plugins' }; const ownerUser = (allUsers || []).find(u => u.id === server.ownerId) || {}; const totalPortSlots = ownerUser.role === 'admin' ? 999 : Number(ownerUser.portSlots || 0); const usedPortSlots = (server.networkPorts || []).length; const totalBackupSlots = ownerUser.role === 'admin' ? 999 : Number(ownerUser.backupSlots || 1); const usedBackupSlots = (backups && backups.backups ? backups.backups.length : 0); const backupSchedule = server.backupSchedule || { enabled: false, interval: 'off', keepLatest: 1 }; %>
 <section class="hero">
   <div>
     <h1><%= server.name %></h1>
@@ -8,6 +9,27 @@
     <%= live && live.state && live.state.Running ? 'Online' : 'Offline' %>
   </div>
 </section>
+
+<% const agentServer = live && live.server ? live.server : {}; const resourceStop = agentServer.resourceStop || server.resourceStop || null; const lastStopReason = agentServer.lastStopReason || server.lastStopReason || ''; %>
+<% if (resourceStop && resourceStop.active) { %>
+<section class="limit-alert">
+  <div class="limit-alert-icon">!</div>
+  <div>
+    <h2>Server stopped because it hit its resource limit</h2>
+    <p><%= resourceStop.message %></p>
+    <p class="muted"><%= resourceStop.upgradeHint || 'Upgrade this server to start it again safely.' %></p>
+    <div class="button-row mt-12">
+      <% if (upgradeWebsiteUrl) { %><a class="button primary" href="<%= upgradeWebsiteUrl %>" target="_blank">Buy upgrade</a><% } %>
+      <button type="button" class="primary" onclick="activateTab('upgrade')">Upgrade resources</button>
+      <button type="button" onclick="activateTab('files')">Clean files</button>
+    </div>
+  </div>
+</section>
+<% } else if (lastStopReason) { %>
+<section class="notice-card">
+  <strong>Last stop reason:</strong> <%= lastStopReason %>
+</section>
+<% } %>
 
 <section class="grid-2">
   <div class="card">
@@ -41,12 +63,53 @@
   <button class="tab-btn" data-tab="ftp">FTP / SFTP</button>
   <button class="tab-btn" data-tab="saves">Saves</button>
   <button class="tab-btn" data-tab="backups">Backups</button>
-  <button class="tab-btn" data-tab="addons">Plugins / Mods</button>
+  <button class="tab-btn" data-tab="upgrade">Upgrade</button>
+  <button class="tab-btn" data-tab="addons"><%= addInfo.label %></button>
   <button class="tab-btn" data-tab="settings">Settings</button>
   <button class="tab-btn" data-tab="subusers">Subusers</button>
   <button class="tab-btn" data-tab="network">Network</button>
   <button class="tab-btn" data-tab="subdomains">Subdomains</button>
   <button class="tab-btn" data-tab="database">Database</button>
+</section>
+
+
+<section id="tab-upgrade" class="tab-panel">
+  <div class="card upgrade-card">
+    <div class="card-title-row">
+      <div>
+        <h2>Upgrade resources</h2>
+        <p class="muted">Use this when the server has run out of RAM, CPU, or storage.</p>
+      </div>
+      <% if (upgradeWebsiteUrl) { %><a class="button primary" href="<%= upgradeWebsiteUrl %>" target="_blank">Open upgrade shop</a><% } %>
+    </div>
+    <div class="upgrade-grid">
+      <div class="upgrade-box"><strong><%= server.memoryMb %> MB</strong><span>Current RAM</span></div>
+      <div class="upgrade-box"><strong><%= server.cpuLimit || 1 %></strong><span>Current CPU</span></div>
+      <div class="upgrade-box"><strong><%= server.storageLimitMb || 0 %> MB</strong><span>Current storage</span></div>
+    </div>
+    <% if (resourceStop && resourceStop.active) { %>
+      <div class="inner-card danger-soft">
+        <strong>Why it stopped:</strong>
+        <p><%= resourceStop.message %></p>
+        <p class="muted"><%= resourceStop.upgradeHint %></p>
+      </div>
+    <% } %>
+    <% if (viewer && viewer.role === 'admin') { %>
+      <form method="post" action="/servers/<%= server.id %>/resources/upgrade" class="form settings-grid mt-12">
+        <label>RAM MB</label><input name="memoryMb" type="number" min="128" value="<%= server.memoryMb %>">
+        <label>CPU cores</label><input name="cpuLimit" type="number" min="0.1" step="0.1" value="<%= server.cpuLimit || 1 %>">
+        <label>Storage MB</label><input name="storageLimitMb" type="number" min="512" value="<%= server.storageLimitMb || 10240 %>">
+        <div class="span"><button class="primary">Save upgraded limits</button></div>
+      </form>
+      <p class="muted small">Admin mode: saving this recreates the Docker container with the bigger limits but keeps the server files.</p>
+    <% } else { %>
+      <div class="inner-card">
+        <h3>Need more resources?</h3>
+        <p>Buy an upgrade on your website, or ask an admin to add more RAM, CPU, or storage to this server.</p>
+        <p class="muted small">Your shop can call the panel upgrade API to add resources automatically after payment.</p>
+      </div>
+    <% } %>
+  </div>
 </section>
 
 <section id="tab-console" class="tab-panel active">
@@ -217,11 +280,20 @@
 <section id="tab-backups" class="tab-panel">
   <div class="card">
     <div class="card-title-row">
-      <h2>Backups</h2>
+      <div><h2>Backups</h2><p class="muted">Slots used: <strong><%= usedBackupSlots %>/<%= totalBackupSlots %></strong></p></div>
       <form method="post" action="/servers/<%= server.id %>/backups/create">
         <button class="primary">Create backup</button>
       </form>
     </div>
+    <form method="post" action="/servers/<%= server.id %>/backups/schedule" class="form settings-grid mt-12">
+      <label>Automatic backups</label>
+      <select name="interval">
+        <% ['off','hourly','daily','weekly','monthly'].forEach(opt => { %><option value="<%= opt %>" <%= backupSchedule.interval === opt ? 'selected' : '' %>><%= opt %></option><% }) %>
+      </select>
+      <label>Keep latest</label><input name="keepLatest" type="number" min="1" value="<%= backupSchedule.keepLatest || 1 %>">
+      <button class="primary">Save backup schedule</button>
+      <p class="muted small span">Next run: <%= backupSchedule.nextRunAt ? new Date(backupSchedule.nextRunAt).toLocaleString() : 'Off' %>. Automatic backups still use backup slots.</p>
+    </form>
     <% if (backups && backups.error) { %><p class="error"><%= backups.error %></p><% } %>
     <table>
       <thead><tr><th>Name</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead>
@@ -253,20 +325,24 @@
   <div class="card">
     <div class="card-title-row addons-header">
       <div>
-        <h2>Plugin / Mod installer</h2>
-        <p class="muted">Search Modrinth, Hangar, and Spigot/Spiget, or paste a direct jar URL.</p>
+        <h2><%= addInfo.label %> installer</h2>
+        <p class="muted"><% if (addInfo.kind === 'plugin') { %>This server type uses plugins, so only plugin sources are shown.<% } else if (addInfo.kind === 'mod') { %>This server type uses mods, so only Modrinth mods are shown.<% } else { %>This game type does not support automatic plugin/mod installs yet. Use the file manager.<% } %></p>
       </div>
     </div>
 
     <div class="plugin-searchbar">
-      <input id="realAddonSearch" placeholder="Search plugins or mods, like LuckPerms, EssentialsX, Geyser">
+      <input id="realAddonSearch" placeholder="Search <%= addInfo.label.toLowerCase() %>, like LuckPerms, EssentialsX, Fabric API" <%= addInfo.kind === 'none' ? 'disabled' : '' %>>
       <select id="realAddonSource">
-        <option value="all">All sources</option>
-        <option value="modrinth">Modrinth</option>
-        <option value="hangar">Hangar</option>
-        <option value="spiget">Spigot/Spiget</option>
+        <% if (addInfo.kind === 'plugin') { %>
+          <option value="all">All plugin sources</option>
+          <option value="modrinth">Modrinth</option>
+          <option value="hangar">Hangar</option>
+          <option value="spiget">Spigot/Spiget</option>
+        <% } else { %>
+          <option value="modrinth">Modrinth mods</option>
+        <% } %>
       </select>
-      <button type="button" onclick="searchRealAddons()">Search</button>
+      <button type="button" onclick="searchRealAddons()" <%= addInfo.kind === 'none' ? 'disabled' : '' %>>Search</button>
     </div>
 
     <div class="sub-tabs">
@@ -276,12 +352,12 @@
     </div>
 
     <div id="catalog-search" class="subtab-panel active">
-      <div id="realAddonStatus" class="muted small">Search for plugins or mods above.</div>
+      <div id="realAddonStatus" class="muted small">Search for <%= addInfo.label.toLowerCase() %> above.</div>
       <div class="addon-grid" id="realAddonGrid"></div>
 
       <h3>Quick install picks</h3>
       <div class="addon-grid" id="addonGrid">
-        <% pluginCatalog.forEach(item => { %>
+        <% pluginCatalog.filter(item => item.type === addInfo.kind).forEach(item => { %>
           <div class="addon-card" data-search="<%= (item.name + ' ' + item.description + ' ' + item.type).toLowerCase() %>">
             <div class="addon-top">
               <div class="addon-icon"><%= item.type === 'mod' ? 'M' : 'P' %></div>
@@ -302,6 +378,7 @@
 
     <div id="catalog-installed" class="subtab-panel">
       <div class="grid-2">
+        <% if (addInfo.kind === 'plugin') { %>
         <div class="card inner-card">
           <h3>Installed plugins</h3>
           <% if (plugins && plugins.error) { %><p class="error"><%= plugins.error %></p><% } %>
@@ -324,6 +401,8 @@
             <% } %>
           </ul>
         </div>
+        <% } %>
+        <% if (addInfo.kind === 'mod') { %>
         <div class="card inner-card">
           <h3>Installed mods</h3>
           <% if (mods && mods.error) { %><p class="error"><%= mods.error %></p><% } %>
@@ -346,6 +425,8 @@
             <% } %>
           </ul>
         </div>
+        <% } %>
+        <% if (addInfo.kind === 'none') { %><p class="muted">No installed plugin/mod folder is shown for this game type.</p><% } %>
       </div>
     </div>
 
@@ -355,12 +436,12 @@
         <form method="post" action="/servers/<%= server.id %>/installer" class="form two-col add-url-form">
           <label>Type</label>
           <select name="type">
-            <option value="plugin">Plugin</option>
-            <option value="mod">Mod</option>
+            <% if (addInfo.kind === 'plugin') { %><option value="plugin">Plugin</option><% } %>
+            <% if (addInfo.kind === 'mod') { %><option value="mod">Mod</option><% } %>
           </select>
           <label>Download URL</label>
           <input name="url" placeholder="https://example.com/plugin.jar" required>
-          <button class="primary span">Install from URL</button>
+          <button class="primary span" <%= addInfo.kind === 'none' ? 'disabled' : '' %>>Install from URL</button>
         </form>
       </div>
     </div>
@@ -492,18 +573,19 @@
 
 <section id="tab-network" class="tab-panel">
   <div class="card">
-    <div class="card-title-row"><h2>Network</h2><p class="muted">Main join address and extra port records.</p></div>
-    <div class="chips"><span>Main IP: <%= server.ipAddress || 'not set' %></span><span>Main port: <%= server.port %></span></div>
+    <div class="card-title-row"><h2>Network</h2><p class="muted">Main join address and extra Docker port bindings.</p></div>
+    <div class="chips"><span>Main IP: <%= server.ipAddress || 'not set' %></span><span>Main port: <%= server.port %></span><span>Extra port slots: <%= usedPortSlots %>/<%= totalPortSlots %></span></div>
     <form method="post" action="/servers/<%= server.id %>/network/ports" class="form settings-grid mt-12">
       <label>Extra port</label><input name="port" type="number" min="1" max="65535" placeholder="25566" required>
+      <label>Container port</label><input name="containerPort" type="number" min="1" max="65535" placeholder="Same as public port">
       <label>Type</label><select name="type"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
       <label>Notes</label><input name="notes" placeholder="Voice chat, Dynmap, extra service">
-      <div class="span"><button class="primary">Add port record</button></div>
+      <div class="span"><button class="primary" <%= (ownerUser.role !== 'admin' && usedPortSlots >= totalPortSlots) ? 'disabled' : '' %>>Add port</button></div>
     </form>
-    <p class="muted small">This tracks ports for plans/orders. Live Docker rebinding for extra ports can be added next.</p>
-    <table><thead><tr><th>Port</th><th>Type</th><th>Notes</th><th>Actions</th></tr></thead><tbody>
+    <p class="muted small">You need one free port slot for each extra port. Adding/removing a port recreates the Docker container but keeps the same files.</p>
+    <table><thead><tr><th>Public port</th><th>Container port</th><th>Type</th><th>Notes</th><th>Actions</th></tr></thead><tbody>
       <% (server.networkPorts || []).forEach(p => { %>
-        <tr><td><%= p.port %></td><td><%= p.type %></td><td><%= p.notes || '' %></td><td><form method="post" action="/servers/<%= server.id %>/network/ports/remove"><input type="hidden" name="port" value="<%= p.port %>"><button class="danger small-btn">Remove</button></form></td></tr>
+        <tr><td><%= p.port || p.publicPort %></td><td><%= p.containerPort || p.port || p.publicPort %></td><td><%= p.type || p.protocol %></td><td><%= p.notes || '' %></td><td><form method="post" action="/servers/<%= server.id %>/network/ports/remove"><input type="hidden" name="port" value="<%= p.port %>"><button class="danger small-btn">Remove</button></form></td></tr>
       <% }) %>
     </tbody></table>
   </div>
@@ -601,7 +683,7 @@ document.querySelectorAll('.subtab-btn').forEach(btn => btn.addEventListener('cl
 
 const hash = (location.hash || '#console').replace('#', '');
 activateTab(hash || 'console');
-activateSubtab('all');
+activateSubtab('search');
 
 const searchInput = document.getElementById('catalogSearch');
 if (searchInput) {

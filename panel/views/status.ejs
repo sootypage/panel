@@ -1,0 +1,39 @@
+<%- include('layout-top', { title }) %>
+<section class="hero">
+  <div>
+    <h1>Network Status</h1>
+    <p>Live node health, uptime markers, downtime markers, locations, latency, and server counts.</p>
+  </div>
+  <a class="button primary" href="/dashboard">Back to panel</a>
+</section>
+
+<section class="grid">
+  <div class="card"><h2>Nodes online</h2><div class="stat"><strong><%= nodes.filter(n => n.status === 'up').length %>/<%= nodes.length %></strong><span>Healthy</span></div></div>
+  <div class="card"><h2>Total servers</h2><div class="stat"><strong><%= servers.length %></strong><span>Tracked</span></div></div>
+  <div class="card"><h2>Locations</h2><div class="stat"><strong><%= [...new Set(nodes.map(n => n.location || 'Unknown'))].length %></strong><span>Regions</span></div></div>
+</section>
+
+<section class="card mt-12">
+  <h2>Nodes</h2>
+  <table>
+    <thead><tr><th>Status</th><th>Node</th><th>Location</th><th>Public IP</th><th>Latency</th><th>Servers</th><th>Uptime / downtime</th></tr></thead>
+    <tbody>
+      <% nodes.forEach(n => { %>
+        <tr>
+          <td><span class="pill <%= n.status === 'up' ? 'success' : 'danger' %>"><%= n.status === 'up' ? 'Online' : 'Offline' %></span></td>
+          <td><strong><%= n.name %></strong><br><span class="muted small"><%= n.url %></span></td>
+          <td><%= n.location || 'Unknown' %></td>
+          <td><%= n.publicIp || '' %></td>
+          <td><%= n.latencyMs !== null ? n.latencyMs + 'ms' : '-' %></td>
+          <td><%= n.servers %></td>
+          <td class="small">
+            Last online: <%= n.lastOnlineAt ? new Date(n.lastOnlineAt).toLocaleString() : 'Never' %><br>
+            Last down: <%= n.lastDownAt ? new Date(n.lastDownAt).toLocaleString() : 'Never' %>
+            <% if (n.error) { %><br><span class="error"><%= n.error %></span><% } %>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</section>
+<%- include('layout-bottom') %>
