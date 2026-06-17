@@ -13,6 +13,7 @@
     <% if (user) { %>
       <a href="/dashboard">Dashboard</a>
       <a href="/status">Status</a>
+      <a href="/billing">Billing</a>
       <a href="/api-keys">API Keys</a>
       <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
       <form method="post" action="/logout" class="inline"><button>Logout</button></form>

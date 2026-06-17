@@ -120,6 +120,7 @@
       <label>Memory limit MB</label><input name="memoryMb" id="memoryInput" type="number" value="2048">
       <label>CPU limit</label><input name="cpuLimit" type="number" step="0.25" value="1">
       <label>Storage limit MB</label><input name="storageLimitMb" id="storageInput" type="number" value="10240">
+      <label>Storage location</label><select name="storageLocation"><option value="/mnt/ssd1">SSD 1 (/mnt/ssd1)</option><option value="/mnt/ssd2">SSD 2 (/mnt/ssd2)</option><option value="/var/lib/docker">Default (/var/lib/docker)</option></select>
       <label>Server IP</label><input name="ipAddress" placeholder="Leave blank to use node public IP">
       <label>Public port</label><input name="port" id="portInput" type="number" value="25565">
       <button class="primary span">Create server</button>
@@ -177,6 +178,7 @@
       <label>RAM MB</label><input name="memoryMb" type="number" value="2048">
       <label>CPU</label><input name="cpuLimit" type="number" step="0.25" value="1">
       <label>Storage MB</label><input name="storageLimitMb" type="number" value="10240">
+      <label>Storage location</label><select name="storageLocation"><option value="/mnt/ssd1">SSD 1 (/mnt/ssd1)</option><option value="/mnt/ssd2">SSD 2 (/mnt/ssd2)</option><option value="/var/lib/docker">Default (/var/lib/docker)</option></select>
       <label>Managed recreate</label><label class="check-card"><input name="recreateManaged" type="checkbox"> <span>Recreate container with panel limits and same data mount after import</span><small>Leave off to only link the existing container.</small></label>
       <button class="primary span">Import container</button>
     </form>
@@ -185,21 +187,36 @@
 
 <section id="tab-plans" class="tab-panel">
   <div class="card">
-    <h2>Plans</h2>
-    <p class="muted">Use these values for your website checkout when calling the provision API.</p>
+    <h2>Billing Plans</h2>
+    <p class="muted">Create subscription plans for Stripe billing. Users can subscribe from the billing page.</p>
     <form method="post" action="/admin/plans" class="form two-col">
       <label>Plan name</label><input name="name" placeholder="Minecraft 4GB">
+      <label>Price</label><input name="price" type="number" step="0.01" placeholder="9.99">
+      <label>Interval</label><select name="interval"><option value="month">Monthly</option><option value="year">Yearly</option></select>
+      <label>Currency</label><select name="currency"><option value="usd">USD</option><option value="eur">EUR</option><option value="aud">AUD</option></select>
+      <label>Stripe Price ID</label><input name="stripePriceId" placeholder="price_1234567890">
       <label>RAM MB</label><input name="memoryMb" type="number" value="4096">
       <label>CPU</label><input name="cpuLimit" type="number" step="0.25" value="2">
       <label>Storage MB</label><input name="storageLimitMb" type="number" value="20480">
-      <label>Included extra ports</label><input name="extraPorts" type="number" value="0">
-      <label>Included backup slots</label><input name="backupSlots" type="number" value="1">
-      <label>Included subdomain slots</label><input name="subdomainSlots" type="number" value="0">
-      <label>Included databases</label><input name="databases" type="number" value="0">
       <button class="primary span">Save plan</button>
     </form>
-    <table><thead><tr><th>Name</th><th>RAM</th><th>CPU</th><th>Storage</th><th>Ports</th><th>Backups</th><th>Subdomains</th><th>Databases</th></tr></thead><tbody>
-      <% (db.plans || []).forEach(p => { %><tr><td><%= p.name %></td><td><%= p.memoryMb %> MB</td><td><%= p.cpuLimit %></td><td><%= p.storageLimitMb %> MB</td><td><%= p.extraPorts %></td><td><%= p.backupSlots || 0 %></td><td><%= p.subdomainSlots || 0 %></td><td><%= p.databases %></td></tr><% }) %>
+    <table><thead><tr><th>Name</th><th>Price</th><th>Interval</th><th>RAM</th><th>CPU</th><th>Storage</th><th>Stripe Price ID</th><th>Actions</th></tr></thead><tbody>
+      <% (db.plans || []).forEach(p => { %>
+        <tr>
+          <td><%= p.name %></td>
+          <td>$<%= p.price %></td>
+          <td><%= p.interval %></td>
+          <td><%= p.memoryMb %> MB</td>
+          <td><%= p.cpuLimit %></td>
+          <td><%= p.storageLimitMb %> MB</td>
+          <td><code><%= p.stripePriceId || 'Not set' %></code></td>
+          <td>
+            <form method="post" action="/admin/plans/<%= p.id %>/delete" onsubmit="return confirm('Delete this plan?');">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
     </tbody></table>
   </div>
 </section>
@@ -288,10 +305,51 @@ activateTab((location.hash || '#overview').replace('#',''));
       const rows = (data.containers || []).map(c => `<tr><td><button type="button" class="small-btn pick-container" data-name="${c.name}">Use</button></td><td>${c.name}</td><td>${c.image}</td><td>${c.state || ''}<br>${c.status || ''}</td><td>${(c.ports||[]).map(p => `${p.publicPort}->${p.containerPort}/${p.protocol}`).join('<br>') || 'None'}</td><td>${c.dataPath || 'No /data mount'}</td><td>${c.imported ? 'Already imported' : (c.canImport ? 'Ready' : 'Needs mount')}</td></tr>`).join('');
       out.innerHTML = `<table><thead><tr><th></th><th>Name</th><th>Image</th><th>Status</th><th>Ports</th><th>Data path</th><th>Import</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No containers found.</td></tr>'}</tbody></table>`;
       out.querySelectorAll('.pick-container').forEach(btn => btn.addEventListener('click', () => {
+        const containerData = (data.containers || []).find(c => c.name === btn.dataset.name);
         document.getElementById('importContainerInput').value = btn.dataset.name;
         const name = btn.dataset.name.replace(/^amp-/, '').replace(/-[a-f0-9]{8}$/i, '');
         if (!document.getElementById('importNameInput').value) document.getElementById('importNameInput').value = name;
         document.getElementById('importNodeSelect').value = nodeId;
+        
+        // Auto-detect and fill in container details
+        if (containerData) {
+          // Auto-fill port from first useful port
+          if (containerData.ports && containerData.ports.length > 0) {
+            const firstPort = containerData.ports.find(p => p.publicPort && p.publicPort !== 25565) || containerData.ports[0];
+            if (firstPort && firstPort.publicPort) {
+              document.querySelector('input[name="port"]').value = firstPort.publicPort;
+            }
+          }
+          
+          // Auto-fill image
+          if (containerData.image && !document.querySelector('input[name="image"]').value) {
+            document.querySelector('input[name="image"]').value = containerData.image;
+          }
+          
+          // Auto-detect game type from image
+          const imageLower = (containerData.image || '').toLowerCase();
+          let detectedType = 'PAPER';
+          if (imageLower.includes('minecraft')) detectedType = 'PAPER';
+          else if (imageLower.includes('rust')) detectedType = 'RUST';
+          else if (imageLower.includes('valheim')) detectedType = 'VALHEIM';
+          else if (imageLower.includes('terraria')) detectedType = 'TERRARIA';
+          else if (imageLower.includes('factorio')) detectedType = 'FACTORIO';
+          else if (imageLower.includes('node')) detectedType = 'NODEJS';
+          else if (imageLower.includes('python')) detectedType = 'PYTHON';
+          else if (imageLower.includes('mariadb')) detectedType = 'MARIADB';
+          else if (imageLower.includes('mysql')) detectedType = 'MYSQL';
+          else if (imageLower.includes('postgres')) detectedType = 'POSTGRESQL';
+          
+          const typeSelect = document.querySelector('select[name="serverType"]');
+          if (typeSelect) {
+            typeSelect.value = detectedType;
+          }
+          
+          // Auto-fill game key if blank
+          if (!document.querySelector('input[name="game"]').value) {
+            document.querySelector('input[name="game"]').value = detectedType.toLowerCase();
+          }
+        }
       }));
     } catch (e) { out.textContent = e.message; }
   });

@@ -6,7 +6,7 @@
     <p><%= server.game %> on <%= node ? node.name : 'Unknown node' %> · <%= server.ipAddress || 'IP not set' %>:<%= server.port %></p>
   </div>
   <div class="status <%= live && live.state && live.state.Running ? 'online' : 'offline' %>">
-    <%= live && live.state && live.state.Running ? 'Online' : 'Offline' %>
+    <%= live && live.state && live.state.Running ? '🟢 Online' : '🔴 Offline' %>
   </div>
 </section>
 
@@ -33,7 +33,7 @@
 
 <section class="grid-2">
   <div class="card">
-    <h2>Resource usage</h2>
+    <h2>📊 Resource usage</h2>
     <div class="resource-grid">
       <div><strong id="cpuStat"><%= live && live.stats && live.stats.docker ? live.stats.docker.cpuPercent : '0%' %></strong><span>CPU</span></div>
       <div><strong id="ramStat"><%= live && live.stats && live.stats.docker ? live.stats.docker.memoryUsage : '0B / 0B' %></strong><span>RAM</span></div>
@@ -42,34 +42,35 @@
     </div>
   </div>
   <div class="card">
-    <h2>Server limits</h2>
+    <h2>⚙️ Server limits</h2>
     <div class="chips">
-      <span>RAM <%= server.memoryMb %> MB</span>
-      <span>CPU <%= server.cpuLimit || 1 %></span>
-      <span>Storage <%= server.storageLimitMb || 0 %> MB</span>
-      <span>Join: <%= server.ipAddress || 'IP not set' %>:<%= server.port %></span>
+      <span>💾 RAM <%= server.memoryMb %> MB</span>
+      <span>🖥️ CPU <%= server.cpuLimit || 1 %></span>
+      <span>📁 Storage <%= server.storageLimitMb || 0 %> MB</span>
+      <span>🌐 Join: <%= server.ipAddress || 'IP not set' %>:<%= server.port %></span>
     </div>
     <div class="button-row mt-12">
-      <form method="post" action="/servers/<%= server.id %>/action"><button name="action" value="start" class="primary">Start</button></form>
-      <form method="post" action="/servers/<%= server.id %>/action"><button name="action" value="restart">Restart</button></form>
-      <form method="post" action="/servers/<%= server.id %>/action"><button name="action" value="stop" class="danger">Stop</button></form>
+      <form method="post" action="/servers/<%= server.id %>/action"><button name="action" value="start" class="primary">▶️ Start</button></form>
+      <form method="post" action="/servers/<%= server.id %>/action"><button name="action" value="restart">🔄 Restart</button></form>
+      <form method="post" action="/servers/<%= server.id %>/action"><button name="action" value="stop" class="danger">⏹️ Stop</button></form>
     </div>
   </div>
 </section>
 
 <section class="tab-bar card">
-  <button class="tab-btn active" data-tab="console">Console</button>
-  <button class="tab-btn" data-tab="files">File manager</button>
-  <button class="tab-btn" data-tab="ftp">FTP / SFTP</button>
-  <button class="tab-btn" data-tab="saves">Saves</button>
-  <button class="tab-btn" data-tab="backups">Backups</button>
-  <button class="tab-btn" data-tab="upgrade">Upgrade</button>
-  <button class="tab-btn" data-tab="addons"><%= addInfo.label %></button>
-  <button class="tab-btn" data-tab="settings">Settings</button>
-  <button class="tab-btn" data-tab="subusers">Subusers</button>
-  <button class="tab-btn" data-tab="network">Network</button>
-  <button class="tab-btn" data-tab="subdomains">Subdomains</button>
-  <button class="tab-btn" data-tab="database">Database</button>
+  <button class="tab-btn" data-tab="console">📟 Console</button>
+  <button class="tab-btn" data-tab="files">📁 File manager</button>
+  <button class="tab-btn" data-tab="ftp">🔐 FTP / SFTP</button>
+  <button class="tab-btn" data-tab="saves">💾 Saves</button>
+  <button class="tab-btn" data-tab="backups">📦 Backups</button>
+  <button class="tab-btn" data-tab="upgrade">⬆️ Upgrade</button>
+  <button class="tab-btn" data-tab="addons">🧩 <%= addInfo.label %></button>
+  <button class="tab-btn active" data-tab="settings">⚙️ Settings</button>
+  <button class="tab-btn" data-tab="players">👨‍🎮 Players</button>
+  <button class="tab-btn" data-tab="subusers">👥 Subusers</button>
+  <button class="tab-btn" data-tab="network">🌐 Network</button>
+  <button class="tab-btn" data-tab="subdomains">🔗 Subdomains</button>
+  <button class="tab-btn" data-tab="database">🗄️ Database</button>
 </section>
 
 
@@ -455,77 +456,109 @@
     <% if (settings && settings.error) { %><p class="error"><%= settings.error %></p><% } %>
     <form method="post" action="/servers/<%= server.id %>/settings" class="form settings-grid">
       <label>Server type</label>
-      <select name="serverType">
-        <% ['PAPER','PURPUR','FABRIC','FORGE','NEOFORGE','VANILLA','VELOCITY','BUNGEECORD','WATERFALL','RUST','CUSTOM'].forEach(v => { %>
+      <select name="serverType" id="serverTypeSelect" onchange="updateConfigFields()">
+        <% ['PAPER','PURPUR','SPIGOT','BUKKIT','PUFFERFISH','FABRIC','QUILT','FORGE','NEOFORGE','MOHIST','MAGMA','VANILLA','CUSTOM','VELOCITY','BUNGEECORD','WATERFALL','RUST','TERRARIA','VALHEIM','FACTORIO','ARK','CSGO','GTA','GARRYSMOD','DAYZ','SEVEN_DAYS','MINECRAFT_BEDROCK','PALWORLD','SOTF','UNTURNED','SRCDS','SATISFACTORY','MORDHAU','CONAN','SQUAD','STARBOUND','DON\'T_STARVE','PROJECT_ZOMBOID','MINECRAFT_LEGACY','ATLAS','NODEJS','PYTHON','MARIADB','MYSQL','POSTGRESQL','MINDUSTRY','SCRAP_MECHANIC'].forEach(v => { %>
           <option value="<%= v %>" <%= String(s.type || 'PAPER').toUpperCase() === v ? 'selected' : '' %>><%= v %></option>
         <% }) %>
       </select>
 
-      <label>Minecraft / game version</label>
-      <input name="version" value="<%= s.version || 'LATEST' %>" placeholder="1.21.11 or LATEST">
+      <!-- Minecraft-specific settings -->
+      <div id="minecraft-settings">
+        <label>Minecraft / game version</label>
+        <input name="version" value="<%= s.version || 'LATEST' %>" placeholder="1.21.11 or LATEST">
 
-      <label>MOTD</label>
-      <input name="motd" value="<%= s.motd || server.name %>" placeholder="A Minecraft Server">
+        <label>MOTD</label>
+        <input name="motd" value="<%= s.motd || server.name %>" placeholder="A Minecraft Server">
 
-      <label>Custom JAR file</label>
-      <input name="customServerJar" value="<%= (settings && settings.server && settings.server.env && settings.server.env.CUSTOM_SERVER) ? settings.server.env.CUSTOM_SERVER : '' %>" placeholder="server.jar or /data/server.jar">
-      <p class="muted small span">For Custom JAR, upload your jar to the File Manager first. Default path is /data/server.jar.</p>
+        <label>Custom JAR file</label>
+        <input name="customServerJar" value="<%= (settings && settings.server && settings.server.env && settings.server.env.CUSTOM_SERVER) ? settings.server.env.CUSTOM_SERVER : '' %>" placeholder="server.jar or /data/server.jar">
+        <p class="muted small span">For Custom JAR, upload your jar to the File Manager first. Default path is /data/server.jar.</p>
 
-      <label>World seed</label>
-      <input name="seed" value="<%= s.seed || '' %>" placeholder="Leave blank for random">
+        <label>World seed</label>
+        <input name="seed" value="<%= s.seed || '' %>" placeholder="Leave blank for random">
 
-      <label>Level type</label>
-      <input name="levelType" value="<%= s.levelType || 'minecraft:normal' %>">
+        <label>Level type</label>
+        <input name="levelType" value="<%= s.levelType || 'minecraft:normal' %>">
 
-      <label>Difficulty</label>
-      <select name="difficulty">
-        <% ['peaceful','easy','normal','hard'].forEach(v => { %>
-          <option value="<%= v %>" <%= (s.difficulty || 'easy') === v ? 'selected' : '' %>><%= v %></option>
-        <% }) %>
-      </select>
+        <label>Difficulty</label>
+        <select name="difficulty">
+          <% ['peaceful','easy','normal','hard'].forEach(v => { %>
+            <option value="<%= v %>" <%= (s.difficulty || 'easy') === v ? 'selected' : '' %>><%= v %></option>
+          <% }) %>
+        </select>
 
-      <label>Game mode</label>
-      <select name="gameMode">
-        <% ['survival','creative','adventure','spectator'].forEach(v => { %>
-          <option value="<%= v %>" <%= (s.gameMode || 'survival') === v ? 'selected' : '' %>><%= v %></option>
-        <% }) %>
-      </select>
+        <label>Game mode</label>
+        <select name="gameMode">
+          <% ['survival','creative','adventure','spectator'].forEach(v => { %>
+            <option value="<%= v %>" <%= (s.gameMode || 'survival') === v ? 'selected' : '' %>><%= v %></option>
+          <% }) %>
+        </select>
 
-      <label>Max players</label>
-      <input name="maxPlayers" type="number" value="<%= s.maxPlayers || 20 %>">
+        <label>Max players</label>
+        <input name="maxPlayers" type="number" value="<%= s.maxPlayers || 20 %>">
 
-      <label>Spawn protection</label>
-      <input name="spawnProtection" type="number" value="<%= s.spawnProtection || 16 %>">
+        <label>Spawn protection</label>
+        <input name="spawnProtection" type="number" value="<%= s.spawnProtection || 16 %>">
 
-      <label>View distance</label>
-      <input name="viewDistance" type="number" value="<%= s.viewDistance || 10 %>">
+        <label>View distance</label>
+        <input name="viewDistance" type="number" value="<%= s.viewDistance || 10 %>">
 
-      <label>Simulation distance</label>
-      <input name="simulationDistance" type="number" value="<%= s.simulationDistance || 10 %>">
+        <label>Simulation distance</label>
+        <input name="simulationDistance" type="number" value="<%= s.simulationDistance || 10 %>">
 
-      <label>Online mode</label>
-      <select name="onlineMode">
-        <option value="true" <%= String(s.onlineMode || 'true') === 'true' ? 'selected' : '' %>>true</option>
-        <option value="false" <%= String(s.onlineMode || 'true') === 'false' ? 'selected' : '' %>>false</option>
-      </select>
+        <label>Online mode</label>
+        <select name="onlineMode">
+          <option value="true" <%= String(s.onlineMode || 'true') === 'true' ? 'selected' : '' %>>true</option>
+          <option value="false" <%= String(s.onlineMode || 'true') === 'false' ? 'selected' : '' %>>false</option>
+        </select>
 
-      <label>PvP</label>
-      <select name="pvp">
-        <option value="true" <%= String(s.pvp || 'true') === 'true' ? 'selected' : '' %>>true</option>
-        <option value="false" <%= String(s.pvp || 'true') === 'false' ? 'selected' : '' %>>false</option>
-      </select>
+        <label>PvP</label>
+        <select name="pvp">
+          <option value="true" <%= String(s.pvp || 'true') === 'true' ? 'selected' : '' %>>true</option>
+          <option value="false" <%= String(s.pvp || 'true') === 'false' ? 'selected' : '' %>>false</option>
+        </select>
 
-      <label>Allow flight</label>
-      <select name="allowFlight">
-        <option value="true" <%= String(s.allowFlight || 'false') === 'true' ? 'selected' : '' %>>true</option>
-        <option value="false" <%= String(s.allowFlight || 'false') === 'false' ? 'selected' : '' %>>false</option>
+        <label>Allow flight</label>
+        <select name="allowFlight">
+          <option value="true" <%= String(s.allowFlight || 'false') === 'true' ? 'selected' : '' %>>true</option>
+          <option value="false" <%= String(s.allowFlight || 'false') === 'false' ? 'selected' : '' %>>false</option>
+        </select>
+      </div>
+
+      <!-- Database-specific settings -->
+      <div id="database-settings" style="display:none;">
+        <label>Database name</label>
+        <input name="dbName" value="<%= s.dbName || '' %>" placeholder="database_name">
+        
+        <label>Database user</label>
+        <input name="dbUser" value="<%= s.dbUser || '' %>" placeholder="db_user">
+        
+        <label>Database password</label>
+        <input name="dbPassword" type="password" value="<%= s.dbPassword || '' %>" placeholder="database_password">
+      </div>
+
+      <!-- Web app-specific settings -->
+      <div id="webapp-settings" style="display:none;">
+        <label>App entry point</label>
+        <input name="appEntryPoint" value="<%= s.appEntryPoint || '' %>" placeholder="index.js or app.py">
+        
+        <label>Environment variables</label>
+        <input name="envVars" value="<%= s.envVars || '' %>" placeholder="NODE_ENV=production,PORT=3000">
+      </div>
+
+      <!-- Common settings for all types -->
+      <label>Storage location</label>
+      <select name="storageLocation">
+        <option value="/mnt/ssd1" <%= server.storageLocation === '/mnt/ssd1' ? 'selected' : '' %>>SSD 1 (/mnt/ssd1)</option>
+        <option value="/mnt/ssd2" <%= server.storageLocation === '/mnt/ssd2' ? 'selected' : '' %>>SSD 2 (/mnt/ssd2)</option>
+        <option value="/var/lib/docker" <%= (!server.storageLocation || server.storageLocation === '/var/lib/docker') ? 'selected' : '' %>>Default (/var/lib/docker)</option>
       </select>
 
       <div class="span">
         <button class="primary">Save settings</button>
       </div>
     </form>
-    <p class="muted small">Changing the version recreates the Docker container. Changing the world seed only affects a new world or a reset world.</p>
+    <p class="muted small">Changing the version recreates the Docker container. Changing the world seed only affects a new world or a reset world. Changing storage location requires server restart.</p>
     <hr class="soft-sep">
     <h3 class="danger-text">Danger zone</h3>
     <p class="muted small">Deleting this server removes the Docker container, files, backups, and the panel record. Type the server name to confirm.</p>
@@ -599,6 +632,11 @@
     <% const slots = ownerSubdomains ? (ownerSubdomains.subdomainSlots || 1) : 1; %>
     <p class="muted small">Owner slots: <%= (server.subdomains || []).length %> on this server. Total user slots are managed in Admin → Users.</p>
     <form method="post" action="/servers/<%= server.id %>/subdomains" class="form settings-grid">
+      <label>Domain type</label>
+      <select name="domainType" id="domainTypeSelect">
+        <option value="panel">Panel Domain</option>
+        <option value="custom">Custom Domain</option>
+      </select>
       <label>Domain / subdomain</label><input name="hostname" placeholder="play.example.com" required>
       <label>Target</label><input name="target" value="<%= server.ipAddress || '' %>" placeholder="Server IP or CNAME target">
       <label>Port</label><input name="port" type="number" value="<%= server.port %>">
@@ -606,11 +644,11 @@
       <div class="span"><button class="primary">Add subdomain</button></div>
     </form>
     <table>
-      <thead><tr><th>Hostname</th><th>Target</th><th>Port</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Hostname</th><th>Target</th><th>Port</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody>
       <% (server.subdomains || []).forEach(d => { %>
         <tr>
-          <td><%= d.hostname %></td><td><%= d.target %></td><td><%= d.port %></td><td><%= d.status %></td>
+          <td><%= d.hostname %><%= d.isCustomDomain ? ' <span class="pill">Custom</span>' : '' %></td><td><%= d.target %></td><td><%= d.port %></td><td><%= d.isCustomDomain ? 'Custom' : 'Panel' %></td><td><%= d.status %></td>
           <td><form method="post" action="/servers/<%= server.id %>/subdomains/remove"><input type="hidden" name="subdomainId" value="<%= d.id %>"><button class="danger small-btn">Remove</button></form></td>
         </tr>
       <% }) %>
@@ -637,6 +675,48 @@
       <% }) %>
     </tbody></table>
     <p class="muted small">Automatic MySQL/PostgreSQL creation can be wired to a DB node later.</p>
+  </div>
+</section>
+
+<section id="tab-players" class="tab-panel">
+  <div class="card">
+    <div class="card-title-row"><h2>👨‍🎮 Players</h2><p class="muted">View all players, online status, and OP status.</p></div>
+    
+    <div class="grid-2">
+      <div class="card">
+        <h3>🟢 Online Players</h3>
+        <div id="onlinePlayers" class="resource-grid">
+          <div><strong>0</strong><span>Online</span></div>
+        </div>
+        <p class="muted small mt-12">Players currently connected to the server.</p>
+      </div>
+      <div class="card">
+        <h3>📊 Total Players</h3>
+        <div class="resource-grid">
+          <div><strong>0</strong><span>Total Joined</span></div>
+        </div>
+        <p class="muted small mt-12">All players who have ever joined the server.</p>
+      </div>
+    </div>
+
+    <div class="card mt-12">
+      <h3>👑 OP Players</h3>
+      <p class="muted">Administrators with server operator privileges.</p>
+      <table>
+        <thead><tr><th>Player Name</th><th>UUID</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="opPlayersTable">
+          <tr><td colspan="4" class="muted">No OP players found. Add OPs via the server console or ops.json file.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card mt-12">
+      <h3>📦 Player Inventory</h3>
+      <div class="notice-card">
+        <strong>Coming Soon</strong>
+        <p class="muted">Player inventory viewing and management will be available in a future update.</p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -738,5 +818,35 @@ setInterval(loadLogs, 5000);
 setInterval(loadStats, 5000);
 loadStats();
 setTimeout(() => { const box = document.getElementById('consoleBox'); if (box) box.scrollTop = box.scrollHeight; }, 100);
+
+function updateConfigFields() {
+  const serverType = document.getElementById('serverTypeSelect').value.toUpperCase();
+  const minecraftSettings = document.getElementById('minecraft-settings');
+  const databaseSettings = document.getElementById('database-settings');
+  const webappSettings = document.getElementById('webapp-settings');
+  
+  const minecraftTypes = ['PAPER','PURPUR','SPIGOT','BUKKIT','PUFFERFISH','FABRIC','QUILT','FORGE','NEOFORGE','MOHIST','MAGMA','VANILLA','CUSTOM','VELOCITY','BUNGEECORD','WATERFALL','MINECRAFT_BEDROCK','MINECRAFT_LEGACY'];
+  const databaseTypes = ['MARIADB','MYSQL','POSTGRESQL'];
+  const webappTypes = ['NODEJS','PYTHON'];
+  
+  // Hide all sections first
+  minecraftSettings.style.display = 'none';
+  databaseSettings.style.display = 'none';
+  webappSettings.style.display = 'none';
+  
+  // Show relevant section based on server type
+  if (minecraftTypes.includes(serverType)) {
+    minecraftSettings.style.display = 'block';
+  } else if (databaseTypes.includes(serverType)) {
+    databaseSettings.style.display = 'block';
+  } else if (webappTypes.includes(serverType)) {
+    webappSettings.style.display = 'block';
+  }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  updateConfigFields();
+});
 </script>
 <%- include('layout-bottom') %>

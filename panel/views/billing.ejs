@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %> - <%= BRAND_NAME %></title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand"><%= BRAND_NAME %></div>
+    <div class="nav-links">
+      <a href="/servers">Servers</a>
+      <a href="/billing" class="active">Billing</a>
+      <% if (user.role === 'admin') { %><a href="/admin">Admin</a><% } %>
+      <a href="/logout">Logout</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1>Billing</h1>
+
+    <% if (typeof flash !== 'undefined' && flash.error) { %>
+      <div class="alert alert-error"><%= flash.error %></div>
+    <% } %>
+    <% if (typeof flash !== 'undefined' && flash.success) { %>
+      <div class="alert alert-success"><%= flash.success %></div>
+    <% } %>
+
+    <section class="card">
+      <h2>Available Plans</h2>
+      <div class="plans-grid">
+        <% (db.plans || []).forEach(plan => { %>
+          <div class="plan-card">
+            <h3><%= plan.name %></h3>
+            <div class="plan-price">$<%= plan.price %>/<%= plan.interval %></div>
+            <ul class="plan-features">
+              <li><%= plan.memoryMb %> MB RAM</li>
+              <li><%= plan.cpuLimit %> CPU</li>
+              <li><%= plan.storageLimitMb %> MB Storage</li>
+            </ul>
+            <form action="/billing/subscribe" method="POST">
+              <input type="hidden" name="planId" value="<%= plan.id %>">
+              <label>Server Name</label><input name="serverName" placeholder="My Server" required>
+              <label>Server Type</label><select name="serverType">
+                <option value="PAPER">Minecraft Paper</option>
+                <option value="PURPUR">Minecraft Purpur</option>
+                <option value="SPIGOT">Minecraft Spigot</option>
+                <option value="VANILLA">Minecraft Vanilla</option>
+                <option value="FABRIC">Minecraft Fabric</option>
+                <option value="FORGE">Minecraft Forge</option>
+                <option value="RUST">Rust</option>
+                <option value="VALHEIM">Valheim</option>
+                <option value="TERRARIA">Terraria</option>
+                <option value="FACTORIO">Factorio</option>
+              </select>
+              <button type="submit" class="primary">Subscribe</button>
+            </form>
+          </div>
+        <% }) %>
+        <% if (!(db.plans || []).length) { %>
+          <p class="muted">No plans available. Contact admin to set up plans.</p>
+        <% } %>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Your Subscriptions</h2>
+      <% if (subscriptions.length) { %>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Plan</th>
+              <th>Price</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% subscriptions.forEach(sub => { %>
+              <tr>
+                <td><%= sub.planName %></td>
+                <td>$<%= sub.price %>/<%= sub.interval %></td>
+                <td>
+                  <span class="status status-<%= sub.status %>"><%= sub.status %></span>
+                </td>
+                <td><%= new Date(sub.createdAt).toLocaleDateString() %></td>
+                <td>
+                  <% if (sub.status === 'active') { %>
+                    <form action="/billing/cancel/<%= sub.id %>" method="POST" onsubmit="return confirm('Are you sure you want to cancel this subscription?');">
+                      <button type="submit" class="danger">Cancel</button>
+                    </form>
+                  <% } else { %>
+                    <span class="muted">-</span>
+                  <% } %>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } else { %>
+        <p class="muted">No active subscriptions.</p>
+      <% } %>
+    </section>
+
+    <section class="card">
+      <h2>Payment History</h2>
+      <% if (payments.length) { %>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Amount</th>
+              <th>Status</th>
+              <th>Invoice ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% payments.forEach(payment => { %>
+              <tr>
+                <td><%= new Date(payment.createdAt).toLocaleString() %></td>
+                <td>$<%= payment.amount %> <%= payment.currency.toUpperCase() %></td>
+                <td>
+                  <span class="status status-<%= payment.status %>"><%= payment.status %></span>
+                </td>
+                <td><code><%= payment.stripeInvoiceId %></code></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } else { %>
+        <p class="muted">No payment history.</p>
+      <% } %>
+    </section>
+  </main>
+
+  <style>
+    .plans-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    .plan-card {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    .plan-card h3 {
+      margin: 0 0 0.5rem 0;
+    }
+    .plan-price {
+      font-size: 2rem;
+      font-weight: bold;
+      margin: 1rem 0;
+    }
+    .plan-features {
+      list-style: none;
+      padding: 0;
+      margin: 1rem 0;
+      text-align: left;
+    }
+    .plan-features li {
+      padding: 0.25rem 0;
+    }
+    .status {
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.875rem;
+      font-weight: bold;
+    }
+    .status-active {
+      background: #d4edda;
+      color: #155724;
+    }
+    .status-cancelled {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    .status-past_due {
+      background: #fff3cd;
+      color: #856404;
+    }
+    .status-succeeded {
+      background: #d4edda;
+      color: #155724;
+    }
+  </style>
+</body>
+</html>

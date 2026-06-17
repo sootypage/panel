@@ -16,6 +16,7 @@ const rateLimit = require('express-rate-limit');
 const FormData = require('form-data');
 const { URL } = require('url');
 const { execFileSync } = require('child_process');
+const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
 
 const app = express();
 app.disable('x-powered-by');
@@ -37,6 +38,32 @@ const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 const CLOUDFLARE_ZONE_ID = process.env.CLOUDFLARE_ZONE_ID || '';
 const CLOUDFLARE_ROOT_DOMAIN = String(process.env.CLOUDFLARE_ROOT_DOMAIN || '').toLowerCase().replace(/^\.+|\.+$/g, '');
 const CLOUDFLARE_PROXIED = String(process.env.CLOUDFLARE_PROXIED || 'false').toLowerCase() === 'true';
+const PANEL_DOMAINS = (process.env.PANEL_DOMAINS || '').split(',').map(d => d.trim()).filter(d => d);
+
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || '';
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || '';
+
+async function sendDiscordWebhook(title, description, color = 0x00ff00, fields = []) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  try {
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        embeds: [{
+          title,
+          description,
+          color,
+          fields,
+          timestamp: new Date().toISOString()
+        }]
+      })
+    });
+  } catch (e) {
+    console.error('Discord webhook error:', e.message);
+  }
+}
 
 const API_PERMISSIONS = [
   { key: 'server:start', label: 'Start server' },
@@ -200,7 +227,34 @@ const SERVER_TEMPLATES = [
   { key: 'RUST', label: 'Rust Dedicated Server', category: 'Survival Games', game: 'rust', image: 'didstopia/rust-server:latest', envType: 'RUST', defaultPort: 28015, defaultMemoryMb: 6144, defaultStorageMb: 30720, addons: 'oxide/plugins' },
   { key: 'TERRARIA', label: 'Terraria', category: 'Survival Games', game: 'terraria', image: 'ryshe/terraria:latest', envType: 'TERRARIA', defaultPort: 7777, defaultMemoryMb: 1024, defaultStorageMb: 5120, addons: 'world/files' },
   { key: 'VALHEIM', label: 'Valheim', category: 'Survival Games', game: 'valheim', image: 'lloesche/valheim-server:latest', envType: 'VALHEIM', defaultPort: 2456, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods/manual' },
-  { key: 'FACTORIO', label: 'Factorio', category: 'Automation Games', game: 'factorio', image: 'factoriotools/factorio:stable', envType: 'FACTORIO', defaultPort: 34197, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'mods/manual' }
+  { key: 'FACTORIO', label: 'Factorio', category: 'Automation Games', game: 'factorio', image: 'factoriotools/factorio:stable', envType: 'FACTORIO', defaultPort: 34197, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'mods/manual' },
+  { key: 'ARK', label: 'ARK: Survival Evolved', category: 'Survival Games', game: 'ark', image: 'mbrounds/ark-server:latest', envType: 'ARK', defaultPort: 7777, defaultMemoryMb: 8192, defaultStorageMb: 51200, addons: 'mods/manual' },
+  { key: 'CSGO', label: 'Counter-Strike 2', category: 'FPS Games', game: 'csgo', image: 'cm2network/csgo:latest', envType: 'CSGO', defaultPort: 27015, defaultMemoryMb: 2048, defaultStorageMb: 20480, addons: 'mods/manual' },
+  { key: 'GTA', label: 'GTA V FiveM', category: 'Roleplay', game: 'gta-fivem', image: 'citizenm/fivem:latest', envType: 'FIVEM', defaultPort: 30120, defaultMemoryMb: 4096, defaultStorageMb: 30720, addons: 'resources' },
+  { key: 'GARRYSMOD', label: 'Garry\'s Mod', category: 'Sandbox', game: 'garrysmod', image: 'cm2network/garrysmod:latest', envType: 'GARRYSMOD', defaultPort: 27015, defaultMemoryMb: 2048, defaultStorageMb: 20480, addons: 'addons' },
+  { key: 'DAYZ', label: 'DayZ Standalone', category: 'Survival Games', game: 'dayz', image: 'cbolt/dayz-server:latest', envType: 'DAYZ', defaultPort: 2302, defaultMemoryMb: 4096, defaultStorageMb: 25600, addons: 'mods/manual' },
+  { key: 'SEVEN_DAYS', label: '7 Days to Die', category: 'Survival Games', game: '7dtd', image: 'vinanrra/7dtd:latest', envType: 'SEVENDAYS', defaultPort: 26900, defaultMemoryMb: 4096, defaultStorageMb: 25600, addons: 'mods/manual' },
+  { key: 'MINECRAFT_BEDROCK', label: 'Minecraft Bedrock', category: 'Minecraft Bedrock', game: 'minecraft-bedrock', image: 'itzg/minecraft-bedrock-server:latest', envType: 'BEDROCK', defaultPort: 19132, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'none' },
+  { key: 'PALWORLD', label: 'Palworld', category: 'Survival Games', game: 'palworld', image: 'jammsen/palworld-dedicated-server:latest', envType: 'PALWORLD', defaultPort: 8211, defaultMemoryMb: 8192, defaultStorageMb: 51200, addons: 'mods/manual' },
+  { key: 'SOTF', label: 'Sons of the Forest', category: 'Survival Games', game: 'sotf', image: 'steamgames/sotf:latest', envType: 'SOTF', defaultPort: 8766, defaultMemoryMb: 6144, defaultStorageMb: 30720, addons: 'mods/manual' },
+  { key: 'UNTURNED', label: 'Unturned', category: 'Survival Games', game: 'unturned', image: 'jammsen/unturned:latest', envType: 'UNTURNED', defaultPort: 27015, defaultMemoryMb: 2048, defaultStorageMb: 15360, addons: 'mods/manual' },
+  { key: 'SRCDS', label: 'Source Dedicated Server', category: 'FPS Games', game: 'srcds', image: 'cm2network/srcds:latest', envType: 'SRCDS', defaultPort: 27015, defaultMemoryMb: 2048, defaultStorageMb: 20480, addons: 'mods/manual' },
+  { key: 'SATISFACTORY', label: 'Satisfactory', category: 'Automation Games', game: 'satisfactory', image: 'wolveix/satisfactory-server:latest', envType: 'SATISFACTORY', defaultPort: 7777, defaultMemoryMb: 6144, defaultStorageMb: 30720, addons: 'mods/manual' },
+  { key: 'MORDHAU', label: 'Mordhau', category: 'FPS Games', game: 'mordhau', image: 'mbrounds/mordhau:latest', envType: 'MORDHAU', defaultPort: 7777, defaultMemoryMb: 4096, defaultStorageMb: 20480, addons: 'mods/manual' },
+  { key: 'CONAN', label: 'Conan Exiles', category: 'Survival Games', game: 'conan-exiles', image: 'mbrounds/conan-exiles:latest', envType: 'CONAN', defaultPort: 7777, defaultMemoryMb: 6144, defaultStorageMb: 30720, addons: 'mods/manual' },
+  { key: 'SQUAD', label: 'Squad', category: 'FPS Games', game: 'squad', image: 'mbrounds/squad:latest', envType: 'SQUAD', defaultPort: 7782, defaultMemoryMb: 6144, defaultStorageMb: 30720, addons: 'mods/manual' },
+  { key: 'STARBOUND', label: 'Starbound', category: 'Survival Games', game: 'starbound', image: 'ryshe/starbound:latest', envType: 'STARBOUND', defaultPort: 21025, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'mods/manual' },
+  { key: 'DONT_STARVE', label: 'Don\'t Starve Together', category: 'Survival Games', game: 'dont-starve-together', image: 'ryshe/dst-server:latest', envType: 'DST', defaultPort: 10999, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'mods/manual' },
+  { key: 'PROJECT_ZOMBOID', label: 'Project Zomboid', category: 'Survival Games', game: 'project-zomboid', image: 'vinanrra/project-zomboid:latest', envType: 'ZOMBOID', defaultPort: 16261, defaultMemoryMb: 3072, defaultStorageMb: 15360, addons: 'mods/manual' },
+  { key: 'MINECRAFT_LEGACY', label: 'Minecraft Legacy (1.8.9)', category: 'Minecraft Java', game: 'minecraft-legacy', image: 'itzg/minecraft-server:java8', envType: 'VANILLA', defaultPort: 25565, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'plugins/mods' },
+  { key: 'ATLAS', label: 'ATLAS', category: 'Survival Games', game: 'atlas', image: 'mbrounds/atlas:latest', envType: 'ATLAS', defaultPort: 5755, defaultMemoryMb: 8192, defaultStorageMb: 51200, addons: 'mods/manual' },
+  { key: 'NODEJS', label: 'Node.js App', category: 'Web Applications', game: 'nodejs', image: 'node:latest', envType: 'NODEJS', defaultPort: 3000, defaultMemoryMb: 512, defaultStorageMb: 5120, addons: 'npm' },
+  { key: 'PYTHON', label: 'Python App', category: 'Web Applications', game: 'python', image: 'python:latest', envType: 'PYTHON', defaultPort: 8000, defaultMemoryMb: 512, defaultStorageMb: 5120, addons: 'pip' },
+  { key: 'MARIADB', label: 'MariaDB Database', category: 'Databases', game: 'mariadb', image: 'mariadb:latest', envType: 'MARIADB', defaultPort: 3306, defaultMemoryMb: 1024, defaultStorageMb: 10240, addons: 'none' },
+  { key: 'MYSQL', label: 'MySQL Database', category: 'Databases', game: 'mysql', image: 'mysql:latest', envType: 'MYSQL', defaultPort: 3306, defaultMemoryMb: 1024, defaultStorageMb: 10240, addons: 'none' },
+  { key: 'POSTGRESQL', label: 'PostgreSQL Database', category: 'Databases', game: 'postgresql', image: 'postgres:latest', envType: 'POSTGRESQL', defaultPort: 5432, defaultMemoryMb: 1024, defaultStorageMb: 10240, addons: 'none' },
+  { key: 'MINDUSTRY', label: 'Mindustry', category: 'Strategy Games', game: 'mindustry', image: 'anodynedev/mindustry-server:latest', envType: 'MINDUSTRY', defaultPort: 6567, defaultMemoryMb: 1024, defaultStorageMb: 5120, addons: 'mods/manual' },
+  { key: 'SCRAP_MECHANIC', label: 'Scrap Mechanic', category: 'Survival Games', game: 'scrap-mechanic', image: 'thijsvanommen/scrap-mechanic:latest', envType: 'SCRAP', defaultPort: 4200, defaultMemoryMb: 2048, defaultStorageMb: 10240, addons: 'mods/manual' }
 ];
 function gameTypeConfig(type) {
   const key = String(type || 'PAPER').toUpperCase();
@@ -272,7 +326,7 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHe
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
 const writeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false });
 
-function defaultDb() { return { users: [], nodes: [], servers: [], audit: [], apiKeys: [], plans: [] }; }
+function defaultDb() { return { users: [], nodes: [], servers: [], audit: [], apiKeys: [], plans: [], subscriptions: [], payments: [] }; }
 function normalizeDb(data) {
   data = data || defaultDb();
   data.users = data.users || [];
@@ -281,6 +335,8 @@ function normalizeDb(data) {
   data.audit = data.audit || [];
   data.apiKeys = data.apiKeys || [];
   data.plans = data.plans || [];
+  data.subscriptions = data.subscriptions || [];
+  data.payments = data.payments || [];
   for (const user of data.users) {
     user.subdomainSlots = Number(user.subdomainSlots || (user.role === 'admin' ? 999 : 0));
     user.portSlots = Number(user.portSlots ?? user.networkPortSlots ?? (user.role === 'admin' ? 999 : 0));
@@ -472,6 +528,22 @@ app.get('/api-keys', requireLogin, (req, res) => {
   const user = currentUser(req);
   const apiKeys = db.apiKeys.filter(k => user.role === 'admin' || k.userId === user.id);
   res.render('api-keys', { title: 'API Keys', apiKeys, users: db.users, permissions: API_PERMISSIONS });
+});
+
+app.get('/status', async (req, res) => {
+  const db = readDb();
+  const nodesWithStatus = await Promise.all(db.nodes.map(async (node) => {
+    const serversOnNode = db.servers.filter(s => s.nodeId === node.id);
+    try {
+      const start = Date.now();
+      await callAgent(node, '/health', { timeout: 5000 });
+      const latency = Date.now() - start;
+      return { ...node, status: 'up', latencyMs: latency, servers: serversOnNode.length, error: null };
+    } catch (e) {
+      return { ...node, status: 'down', latencyMs: null, servers: serversOnNode.length, error: e.message };
+    }
+  }));
+  res.render('status', { title: 'Network Status', nodes: nodesWithStatus, servers: db.servers });
 });
 
 app.get('/servers/:id', requireLogin, async (req, res) => {
@@ -682,10 +754,33 @@ app.post('/servers/:id/installer', requireLogin, async (req, res) => {
     if (info.kind === 'none') throw new Error('This game type does not support plugin/mod auto-install yet. Use the file manager instead.');
     const requestedType = req.body.type === 'mod' ? 'mod' : 'plugin';
     if (requestedType !== info.kind) throw new Error(`${info.label} only are allowed for this server type.`);
-    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/installer`, { method: 'POST', body: { type: info.kind, url: req.body.url }, timeout: TIMEOUT * 30 });
-    req.flash('success', `${info.kind === 'mod' ? 'Mod' : 'Plugin'} installed. Restart the server if needed.`);
+    
+    // Validate URL
+    const url = String(req.body.url || '').trim();
+    if (!url) throw new Error('URL is required.');
+    if (!url.startsWith('http://') && !url.startsWith('https://')) throw new Error('URL must start with http:// or https://');
+    
+    // Call agent with improved error handling
+    const result = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/installer`, { method: 'POST', body: { type: info.kind, url }, timeout: TIMEOUT * 30 });
+    
+    // Check if agent returned an error
+    if (result && result.error) throw new Error(result.error);
+    
+    req.flash('success', `${info.kind === 'mod' ? 'Mod' : 'Plugin'} installed successfully. Restart the server if needed.`);
   }
-  catch (e) { req.flash('error', e.message); }
+  catch (e) {
+    console.error('Installer error:', e);
+    const errorMsg = e.message || 'Unknown error occurred';
+    if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
+      req.flash('error', 'Installation timed out. The file might be too large or the server is unreachable. Try again or use the file manager.');
+    } else if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('fetch failed')) {
+      req.flash('error', 'Could not reach the download URL. Please check the URL and try again.');
+    } else if (errorMsg.includes('404')) {
+      req.flash('error', 'File not found at the provided URL. Please check the URL and try again.');
+    } else {
+      req.flash('error', `Installation failed: ${errorMsg}`);
+    }
+  }
   res.redirect(`/servers/${ctx.server.id}#addons`);
 });
 
@@ -710,6 +805,13 @@ app.post('/servers/:id/settings', requireLogin, async (req, res) => {
       customServerJar: req.body.customServerJar
     };
     await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/settings`, { method: 'POST', body: payload, timeout: TIMEOUT * 30 });
+    
+    // Update storage location if changed
+    if (req.body.storageLocation && req.body.storageLocation !== ctx.server.storageLocation) {
+      ctx.server.storageLocation = req.body.storageLocation;
+      writeDb(ctx.db);
+    }
+    
     req.flash('success', 'Server settings updated. Version changes recreate the container.');
   } catch (e) { req.flash('error', e.message); }
   res.redirect(`/servers/${ctx.server.id}#settings`);
@@ -768,6 +870,15 @@ app.post('/api-keys', requireLogin, (req, res) => {
   const permissions = Array.isArray(req.body.permissions) ? req.body.permissions : (req.body.permissions ? [req.body.permissions] : []);
   const allowed = API_PERMISSIONS.map(p => p.key);
   const cleanPermissions = permissions.filter(p => allowed.includes(p));
+  
+  // Restrict website linking permissions to admin only
+  const restrictedPermissions = ['provision:server', 'provision:user'];
+  const hasRestrictedPermission = cleanPermissions.some(p => restrictedPermissions.includes(p));
+  if (hasRestrictedPermission && user.role !== 'admin') {
+    req.flash('error', 'Website linking permissions (provision:server, provision:user) can only be created by admins.');
+    return res.redirect('/api-keys');
+  }
+  
   const token = makeApiKey();
   db.apiKeys = db.apiKeys || [];
   db.apiKeys.push({
@@ -927,53 +1038,83 @@ function cloudflareEnabled() {
 function isIpAddress(value) {
   return /^(\d{1,3}\.){3}\d{1,3}$/.test(String(value || '').trim());
 }
-function normalizeSubdomain(hostname) {
+function normalizeSubdomain(hostname, allowCustom = false) {
   const clean = String(hostname || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/^\.+|\.+$/g, '');
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(clean)) throw new Error('Enter a valid domain or subdomain.');
-  if (CLOUDFLARE_ROOT_DOMAIN && !clean.endsWith(`.${CLOUDFLARE_ROOT_DOMAIN}`) && clean !== CLOUDFLARE_ROOT_DOMAIN) {
+  
+  // If custom domains are allowed, skip the root domain check
+  if (allowCustom) return clean;
+  
+  // Check against panel domains if set
+  if (PANEL_DOMAINS.length > 0) {
+    const matchesPanelDomain = PANEL_DOMAINS.some(domain => clean.endsWith(`.${domain}`) || clean === domain);
+    if (!matchesPanelDomain) throw new Error(`Domain must be one of: ${PANEL_DOMAINS.join(', ')}`);
+  } else if (CLOUDFLARE_ROOT_DOMAIN && !clean.endsWith(`.${CLOUDFLARE_ROOT_DOMAIN}`) && clean !== CLOUDFLARE_ROOT_DOMAIN) {
     throw new Error(`Subdomain must be inside ${CLOUDFLARE_ROOT_DOMAIN}.`);
   }
   return clean;
 }
 async function cloudflareApi(method, endpoint, body) {
-  const response = await fetch(`https://api.cloudflare.com/client/v4${endpoint}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.success === false) {
-    const message = data.errors && data.errors[0] ? data.errors[0].message : `Cloudflare HTTP ${response.status}`;
-    throw new Error(message);
+  try {
+    const response = await fetch(`https://api.cloudflare.com/client/v4${endpoint}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success === false) {
+      const message = data.errors && data.errors[0] ? data.errors[0].message : `Cloudflare HTTP ${response.status}`;
+      console.error('Cloudflare API error:', message, data.errors);
+      throw new Error(message);
+    }
+    return data.result;
+  } catch (e) {
+    console.error('Cloudflare API call failed:', e.message);
+    throw e;
   }
-  return data.result;
 }
 async function createCloudflareRecords({ hostname, target, port, serviceType }) {
-  if (!cloudflareEnabled()) return { status: 'manual-dns-required', cloudflareEnabled: false };
-  const dnsType = isIpAddress(target) ? 'A' : 'CNAME';
-  const main = await cloudflareApi('POST', `/zones/${CLOUDFLARE_ZONE_ID}/dns_records`, {
-    type: dnsType,
-    name: hostname,
-    content: target,
-    ttl: 1,
-    proxied: CLOUDFLARE_PROXIED
-  });
-  let srv = null;
-  const svc = String(serviceType || 'java').toLowerCase();
-  const makeSrv = async (service, proto, defaultPort) => cloudflareApi('POST', `/zones/${CLOUDFLARE_ZONE_ID}/dns_records`, {
-    type: 'SRV',
-    name: `${service}.${proto}.${hostname}`,
-    data: { service, proto, name: hostname, priority: 0, weight: 5, port: Number(port), target: hostname },
-    ttl: 1,
-    proxied: false
-  });
-  if (svc === 'java' && Number(port) && Number(port) !== 25565) srv = await makeSrv('_minecraft', '_tcp', 25565);
-  if (svc === 'bedrock' && Number(port) && Number(port) !== 19132) srv = await makeSrv('_minecraft', '_udp', 19132);
-  // Rust generally uses A/CNAME plus visible port; no widely supported SRV fallback is created here.
-  return { status: 'cloudflare-created', cloudflareEnabled: true, cloudflareRecordId: main.id, cloudflareSrvRecordId: srv ? srv.id : null, dnsType };
+  if (!cloudflareEnabled()) {
+    console.log('Cloudflare not enabled: API_TOKEN=', !!CLOUDFLARE_API_TOKEN, 'ZONE_ID=', !!CLOUDFLARE_ZONE_ID, 'ROOT_DOMAIN=', !!CLOUDFLARE_ROOT_DOMAIN);
+    return { status: 'manual-dns-required', cloudflareEnabled: false };
+  }
+  try {
+    const dnsType = isIpAddress(target) ? 'A' : 'CNAME';
+    console.log('Creating Cloudflare DNS record:', { hostname, target, dnsType, port, serviceType });
+    const main = await cloudflareApi('POST', `/zones/${CLOUDFLARE_ZONE_ID}/dns_records`, {
+      type: dnsType,
+      name: hostname,
+      content: target,
+      ttl: 1,
+      proxied: CLOUDFLARE_PROXIED
+    });
+    console.log('Cloudflare main record created:', main.id);
+    let srv = null;
+    const svc = String(serviceType || 'java').toLowerCase();
+    const makeSrv = async (service, proto, defaultPort) => cloudflareApi('POST', `/zones/${CLOUDFLARE_ZONE_ID}/dns_records`, {
+      type: 'SRV',
+      name: `${service}.${proto}.${hostname}`,
+      data: { service, proto, name: hostname, priority: 0, weight: 5, port: Number(port), target: hostname },
+      ttl: 1,
+      proxied: false
+    });
+    if (svc === 'java' && Number(port) && Number(port) !== 25565) {
+      srv = await makeSrv('_minecraft', '_tcp', 25565);
+      console.log('Cloudflare SRV record created:', srv.id);
+    }
+    if (svc === 'bedrock' && Number(port) && Number(port) !== 19132) {
+      srv = await makeSrv('_minecraft', '_udp', 19132);
+      console.log('Cloudflare SRV record created:', srv.id);
+    }
+    // Rust generally uses A/CNAME plus visible port; no widely supported SRV fallback is created here.
+    return { status: 'cloudflare-created', cloudflareEnabled: true, cloudflareRecordId: main.id, cloudflareSrvRecordId: srv ? srv.id : null, dnsType };
+  } catch (e) {
+    console.error('Failed to create Cloudflare records:', e.message);
+    throw e;
+  }
 }
 async function deleteCloudflareRecord(recordId) {
   if (!cloudflareEnabled() || !recordId) return;
@@ -983,7 +1124,8 @@ async function deleteCloudflareRecord(recordId) {
 app.post('/servers/:id/subdomains', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
   try {
-    const hostname = normalizeSubdomain(req.body.hostname);
+    const isCustomDomain = req.body.domainType === 'custom';
+    const hostname = normalizeSubdomain(req.body.hostname, isCustomDomain);
     const target = String(req.body.target || ctx.server.ipAddress || '').trim();
     const port = Number(req.body.port || ctx.server.port || 25565);
     if (!target) throw new Error('Target IP or hostname is required.');
@@ -998,7 +1140,10 @@ app.post('/servers/:id/subdomains', requireLogin, async (req, res) => {
     if (takenBy) throw new Error('That subdomain is taken by another server.');
 
     const serviceType = String(req.body.serviceType || (String(ctx.server.game || '').includes('rust') ? 'rust' : String(ctx.server.game || '').includes('bedrock') ? 'bedrock' : 'java')).toLowerCase();
-    const cloudflare = await createCloudflareRecords({ hostname, target, port, serviceType });
+    
+    // Only create Cloudflare records if it's not a custom domain
+    const cloudflare = isCustomDomain ? { status: 'manual-dns-required', cloudflareEnabled: false } : await createCloudflareRecords({ hostname, target, port, serviceType });
+    
     ctx.server.subdomains.push({
       id: uuidv4(),
       hostname,
@@ -1007,12 +1152,17 @@ app.post('/servers/:id/subdomains', requireLogin, async (req, res) => {
       status: cloudflare.status,
       dnsType: cloudflare.dnsType || (isIpAddress(target) ? 'A' : 'CNAME'),
       serviceType,
+      isCustomDomain,
       cloudflareRecordId: cloudflare.cloudflareRecordId || null,
       cloudflareSrvRecordId: cloudflare.cloudflareSrvRecordId || null,
       createdAt: new Date().toISOString()
     });
     writeDb(ctx.db);
-    req.flash('success', cloudflare.cloudflareEnabled ? 'Subdomain created in Cloudflare.' : 'Subdomain saved. Add the DNS record manually or configure Cloudflare in panel/.env.');
+    if (isCustomDomain) {
+      req.flash('success', 'Custom domain saved. Add the DNS record manually pointing to your server IP.');
+    } else {
+      req.flash('success', cloudflare.cloudflareEnabled ? 'Subdomain created in Cloudflare.' : 'Subdomain saved. Add the DNS record manually or configure Cloudflare in panel/.env.');
+    }
   } catch (e) {
     req.flash('error', e.message);
   }
@@ -1111,21 +1261,41 @@ async function handleProvisionOrder(req, res) {
     if (plan && Number(plan.backupSlots || 0) > 0) user.backupSlots = Math.max(userBackupLimit(user), Number(user.backupSlots || 0) + Number(plan.backupSlots || 0));
     if (plan && Number(plan.subdomainSlots || 0) > 0) user.subdomainSlots = Math.max(Number(user.subdomainSlots || 0), Number(user.subdomainSlots || 0) + Number(plan.subdomainSlots || 0));
     if (plan && Number(plan.databases || 0) > 0) user.databaseSlots = Math.max(userDatabaseLimit(user), Number(user.databaseSlots || 0) + Number(plan.databases || 0));
-    const node = db.nodes.find(n => n.id === (req.body.nodeId || '')) || db.nodes[0];
+    
+    // Node selection by location or ID
+    let node = null;
+    if (req.body.nodeId) {
+      node = db.nodes.find(n => n.id === req.body.nodeId);
+    } else if (req.body.location) {
+      const locationLower = String(req.body.location).toLowerCase();
+      node = db.nodes.find(n => String(n.location || '').toLowerCase().includes(locationLower));
+    }
+    if (!node) node = db.nodes[0];
     if (!node) return res.status(400).json({ ok: false, error: 'No node exists. Add a node first.' });
+    
     const memoryMb = Number(req.body.memoryMb || (plan && plan.memoryMb) || 2048);
     const cpuLimit = Number(req.body.cpuLimit || (plan && plan.cpuLimit) || 1);
     const storageLimitMb = Number(req.body.storageLimitMb || (plan && plan.storageLimitMb) || 10240);
     const cfg = gameTypeConfig(req.body.serverType || req.body.type || req.body.gameType || 'PAPER');
-    const port = Number(req.body.port || cfg.defaultPort || 25565);
-    const portTaken = db.servers.some(s => Number(s.port) === port || (s.networkPorts || []).some(p => Number(p.port || p.publicPort) === port));
-    if (portTaken) return res.status(409).json({ ok: false, error: `Port ${port} is already used by another server.` });
+    
+    // Auto port selection with conflict detection
+    let port = Number(req.body.port || cfg.defaultPort || 25565);
+    const maxPortAttempts = 100;
+    let attempts = 0;
+    while (attempts < maxPortAttempts) {
+      const portTaken = db.servers.some(s => Number(s.port) === port || (s.networkPorts || []).some(p => Number(p.port || p.publicPort) === port));
+      if (!portTaken) break;
+      port++;
+      attempts++;
+    }
+    if (attempts >= maxPortAttempts) return res.status(409).json({ ok: false, error: 'Could not find an available port after 100 attempts.' });
+    
     const ipAddress = req.body.ipAddress || node.publicIp || nodeHostFromUrl(node.url);
     const name = req.body.serverName || req.body.nameOnPanel || `${(user.name || 'server').replace(/[^a-zA-Z0-9-]/g, '-')}-${Date.now()}`;
     const game = req.body.game || cfg.game;
     const image = req.body.image || cfg.image;
-    const created = await callAgent(node, '/servers', { method: 'POST', body: { name, game, image, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, env: { EULA: 'TRUE', TYPE: cfg.envType, VERSION: req.body.version || 'LATEST', MEMORY: `${Math.floor(memoryMb * 0.85)}M`, ENABLE_RCON: 'true', RCON_PASSWORD: req.body.rconPassword || crypto.randomBytes(12).toString('hex'), MOTD: name, CUSTOM_SERVER: req.body.customServerJar ? (String(req.body.customServerJar).startsWith('/') ? req.body.customServerJar : `/data/${req.body.customServerJar}`) : undefined } }, timeout: TIMEOUT * 60 });
-    const panelServer = { id: uuidv4(), agentServerId: created.server.id, name, game, serverType: serverTypeKey(cfg.envType), ownerId: user.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString(), orderId: req.body.orderId || req.body.checkoutId || null, planId: plan ? plan.id : (req.body.planId || null) };
+    const created = await callAgent(node, '/servers', { method: 'POST', body: { name, game, image, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, storageLocation: req.body.storageLocation || '/var/lib/docker', env: { EULA: 'TRUE', TYPE: cfg.envType, VERSION: req.body.version || 'LATEST', MEMORY: `${Math.floor(memoryMb * 0.85)}M`, ENABLE_RCON: 'true', RCON_PASSWORD: req.body.rconPassword || crypto.randomBytes(12).toString('hex'), MOTD: name, CUSTOM_SERVER: req.body.customServerJar ? (String(req.body.customServerJar).startsWith('/') ? req.body.customServerJar : `/data/${req.body.customServerJar}`) : undefined } }, timeout: TIMEOUT * 60 });
+    const panelServer = { id: uuidv4(), agentServerId: created.server.id, name, game, serverType: serverTypeKey(cfg.envType), ownerId: user.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, storageLocation: req.body.storageLocation || '/var/lib/docker', subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString(), orderId: req.body.orderId || req.body.checkoutId || null, planId: plan ? plan.id : (req.body.planId || null) };
     db.servers.push(panelServer);
     writeDb(db);
     res.json({ ok: true, user: { id: user.id, email: user.email, created: !!plainPassword, password: plainPassword }, server: panelServer, loginUrl: process.env.PANEL_LOGIN_URL || '/login' });
@@ -1147,8 +1317,22 @@ app.post('/servers/:id/delete', requireLogin, async (req, res) => {
   if (confirmName !== ctx.server.name) { req.flash('error', 'Server name confirmation did not match.'); return res.redirect(`/servers/${ctx.server.id}#settings`); }
   try {
     await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/delete`, { method: 'POST', timeout: TIMEOUT * 60 });
+    const serverName = ctx.server.name;
+    const userEmail = ctx.db.users.find(u => u.id === ctx.server.ownerId)?.email || 'Unknown';
     ctx.db.servers = ctx.db.servers.filter(s => s.id !== ctx.server.id);
     writeDb(ctx.db);
+    
+    await sendDiscordWebhook(
+      'Server Deleted',
+      `Server "${serverName}" was deleted by ${userEmail}`,
+      0xff0000,
+      [
+        { name: 'Server', value: serverName },
+        { name: 'User', value: userEmail },
+        { name: 'Deleted At', value: new Date().toISOString() }
+      ]
+    );
+    
     req.flash('success', 'Server deleted. Docker container, files, and backups were removed.');
     return res.redirect('/dashboard');
   } catch (e) { req.flash('error', e.message); return res.redirect(`/servers/${ctx.server.id}#settings`); }
@@ -1181,6 +1365,7 @@ app.post('/admin/import-docker', requireLogin, requireAdmin, async (req, res) =>
       image: req.body.image,
       game: req.body.game,
       version: req.body.version,
+      storageLocation: req.body.storageLocation || '/var/lib/docker',
       recreateManaged: req.body.recreateManaged === 'on'
     }});
     const agentServer = imported.server;
@@ -1199,6 +1384,7 @@ app.post('/admin/import-docker', requireLogin, requireAdmin, async (req, res) =>
       storageLimitMb: Number(req.body.storageLimitMb || agentServer.storageLimitMb || 10240),
       ipAddress: req.body.ipAddress || node.publicIp || nodeHostFromUrl(node.url),
       port: Number(req.body.port || agentServer.port || 25565),
+      storageLocation: req.body.storageLocation || '/var/lib/docker',
       networkPorts: agentServer.networkPorts || [],
       subusers: [], databases: [], subdomains: [], imported: true,
       createdAt: existing ? existing.createdAt : new Date().toISOString()
@@ -1245,6 +1431,250 @@ app.post('/servers/:id/ftp/disable', requireLogin, async (req, res) => {
 });
 
 app.get('/admin', requireLogin, requireAdmin, (req, res) => { const db = readDb(); res.render('admin', { title: 'Admin', db, serverTemplates: SERVER_TEMPLATES }); });
+
+app.post('/admin/plans', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  const plan = {
+    id: uuidv4(),
+    name: req.body.name,
+    price: Number(req.body.price),
+    interval: req.body.interval || 'month',
+    currency: req.body.currency || 'usd',
+    memoryMb: Number(req.body.memoryMb || 2048),
+    cpuLimit: Number(req.body.cpuLimit || 1),
+    storageLimitMb: Number(req.body.storageLimitMb || 10240),
+    stripePriceId: req.body.stripePriceId || '',
+    createdAt: new Date().toISOString()
+  };
+  db.plans.push(plan);
+  writeDb(db);
+  req.flash('success', 'Plan created.');
+  res.redirect('/admin#plans');
+});
+
+app.post('/admin/plans/:id/delete', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  db.plans = db.plans.filter(p => p.id !== req.params.id);
+  writeDb(db);
+  req.flash('success', 'Plan deleted.');
+  res.redirect('/admin#plans');
+});
+
+app.get('/billing', requireLogin, (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const subscriptions = db.subscriptions.filter(s => s.userId === user.id);
+  const payments = db.payments.filter(p => p.userId === user.id);
+  res.render('billing', { title: 'Billing', db, user, subscriptions, payments });
+});
+
+app.post('/billing/subscribe', requireLogin, async (req, res) => {
+  if (!STRIPE_SECRET_KEY) { req.flash('error', 'Stripe not configured.'); return res.redirect('/billing'); }
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const plan = db.plans.find(p => p.id === req.body.planId);
+  if (!plan) { req.flash('error', 'Plan not found.'); return res.redirect('/billing'); }
+  try {
+    const checkoutSession = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [{
+        price: plan.stripePriceId,
+        quantity: 1,
+      }],
+      success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/billing?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/billing`,
+      customer_email: user.email,
+      metadata: {
+        userId: user.id,
+        planId: plan.id,
+        serverName: req.body.serverName || `${plan.name} Server`,
+        serverType: req.body.serverType || 'PAPER'
+      }
+    });
+    res.redirect(checkoutSession.url);
+  } catch (e) {
+    req.flash('error', `Stripe error: ${e.message}`);
+    res.redirect('/billing');
+  }
+});
+
+app.post('/billing/cancel/:id', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const subscription = db.subscriptions.find(s => s.id === req.params.id && s.userId === user.id);
+  if (!subscription) { req.flash('error', 'Subscription not found.'); return res.redirect('/billing'); }
+  try {
+    if (subscription.stripeSubscriptionId && STRIPE_SECRET_KEY) {
+      await stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
+    }
+    subscription.status = 'cancelled';
+    subscription.cancelledAt = new Date().toISOString();
+    writeDb(db);
+    
+    await sendDiscordWebhook(
+      'Subscription Cancelled',
+      `User ${user.email} cancelled their subscription to plan ${subscription.planName}`,
+      0xff0000,
+      [
+        { name: 'User', value: user.email },
+        { name: 'Plan', value: subscription.planName },
+        { name: 'Cancelled At', value: new Date().toISOString() }
+      ]
+    );
+    
+    req.flash('success', 'Subscription cancelled.');
+  } catch (e) {
+    req.flash('error', `Error cancelling subscription: ${e.message}`);
+  }
+  res.redirect('/billing');
+});
+
+app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!STRIPE_WEBHOOK_SECRET) { return res.status(400).json({ error: 'Webhook secret not configured' }); }
+  const sig = req.headers['stripe-signature'];
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+  } catch (e) {
+    return res.status(400).json({ error: `Webhook signature verification failed: ${e.message}` });
+  }
+  const db = readDb();
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.metadata?.userId;
+    const planId = session.metadata?.planId;
+    const serverName = session.metadata?.serverName || `${plan.name} Server`;
+    const serverType = session.metadata?.serverType || 'PAPER';
+    const node = db.nodes[0];
+    const user = db.users.find(u => u.id === userId);
+    const plan = db.plans.find(p => p.id === planId);
+    if (user && plan && session.subscription && node) {
+      const subscription = {
+        id: uuidv4(),
+        userId: user.id,
+        planId: plan.id,
+        planName: plan.name,
+        stripeSubscriptionId: session.subscription,
+        stripeCustomerId: session.customer,
+        status: 'active',
+        price: plan.price,
+        interval: plan.interval,
+        currency: plan.currency,
+        createdAt: new Date().toISOString()
+      };
+      db.subscriptions.push(subscription);
+      
+      try {
+        const template = gameTypeConfig(serverType);
+        const agentServer = await callAgent(node, '/servers', { method: 'POST', timeout: TIMEOUT * 30, body: {
+          name: serverName,
+          image: template.image,
+          env: { TYPE: template.envType, EULA: 'TRUE' },
+          memoryMb: plan.memoryMb,
+          cpuLimit: plan.cpuLimit,
+          storageLimitMb: plan.storageLimitMb,
+          port: template.defaultPort,
+          storageLocation: '/var/lib/docker'
+        }});
+        const panelRecord = {
+          id: uuidv4(),
+          agentServerId: agentServer.id,
+          name: serverName,
+          game: template.game,
+          serverType: serverType,
+          image: template.image,
+          ownerId: user.id,
+          nodeId: node.id,
+          memoryMb: plan.memoryMb,
+          cpuLimit: plan.cpuLimit,
+          storageLimitMb: plan.storageLimitMb,
+          ipAddress: node.publicIp || nodeHostFromUrl(node.url),
+          port: template.defaultPort,
+          storageLocation: '/var/lib/docker',
+          networkPorts: [],
+          subusers: [], databases: [], subdomains: [],
+          subscriptionId: subscription.id,
+          createdAt: new Date().toISOString()
+        };
+        db.servers.push(panelRecord);
+        writeDb(db);
+        
+        await sendDiscordWebhook(
+          'New Server Created',
+          `Server "${serverName}" created for ${user.email} with plan ${plan.name}`,
+          0x00ff00,
+          [
+            { name: 'User', value: user.email },
+            { name: 'Server', value: serverName },
+            { name: 'Plan', value: plan.name },
+            { name: 'Type', value: serverType },
+            { name: 'RAM', value: `${plan.memoryMb} MB` },
+            { name: 'CPU', value: plan.cpuLimit.toString() },
+            { name: 'Storage', value: `${plan.storageLimitMb} MB` }
+          ]
+        );
+      } catch (e) {
+        console.error('Failed to create server after subscription:', e);
+        await sendDiscordWebhook(
+          'Server Creation Failed',
+          `Failed to create server for ${user.email} after subscription to ${plan.name}: ${e.message}`,
+          0xff0000,
+          [
+            { name: 'User', value: user.email },
+            { name: 'Plan', value: plan.name },
+            { name: 'Error', value: e.message }
+          ]
+        );
+      }
+      
+      await sendDiscordWebhook(
+        'New Subscription',
+        `User ${user.email} subscribed to ${plan.name} ($${plan.price}/${plan.interval})`,
+        0x00ff00,
+        [
+          { name: 'User', value: user.email },
+          { name: 'Plan', value: plan.name },
+          { name: 'Price', value: `$${plan.price}/${plan.interval}` },
+          { name: 'Subscription ID', value: session.subscription }
+        ]
+      );
+    }
+  } else if (event.type === 'invoice.payment_succeeded') {
+    const invoice = event.data.object;
+    const subscription = db.subscriptions.find(s => s.stripeSubscriptionId === invoice.subscription);
+    if (subscription) {
+      const payment = {
+        id: uuidv4(),
+        userId: subscription.userId,
+        subscriptionId: subscription.id,
+        amount: invoice.amount_paid / 100,
+        currency: invoice.currency,
+        status: 'succeeded',
+        stripeInvoiceId: invoice.id,
+        createdAt: new Date().toISOString()
+      };
+      db.payments.push(payment);
+      writeDb(db);
+    }
+  } else if (event.type === 'invoice.payment_failed') {
+    const invoice = event.data.object;
+    const subscription = db.subscriptions.find(s => s.stripeSubscriptionId === invoice.subscription);
+    if (subscription) {
+      subscription.status = 'past_due';
+      writeDb(db);
+    }
+  } else if (event.type === 'customer.subscription.deleted') {
+    const sub = event.data.object;
+    const subscription = db.subscriptions.find(s => s.stripeSubscriptionId === sub.id);
+    if (subscription) {
+      subscription.status = 'cancelled';
+      subscription.cancelledAt = new Date().toISOString();
+      writeDb(db);
+    }
+  }
+  res.json({ received: true });
+});
 app.post('/admin/nodes', requireLogin, requireAdmin, (req, res) => {
   const db = readDb();
   db.nodes.push({
@@ -1304,6 +1734,7 @@ app.post('/admin/servers', requireLogin, requireAdmin, async (req, res) => {
       storageLimitMb,
       ipAddress,
       port,
+      storageLocation: req.body.storageLocation || '/var/lib/docker',
       env: {
         EULA: 'TRUE',
         TYPE: cfg.envType,
@@ -1315,7 +1746,7 @@ app.post('/admin/servers', requireLogin, requireAdmin, async (req, res) => {
         CUSTOM_SERVER: req.body.customServerJar ? (String(req.body.customServerJar).startsWith('/') ? req.body.customServerJar : `/data/${req.body.customServerJar}`) : undefined
       }
     }});
-    db.servers.push({ id: uuidv4(), agentServerId: created.server.id, name: req.body.name, game, serverType: serverTypeKey(cfg.envType), ownerId: owner.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
+    db.servers.push({ id: uuidv4(), agentServerId: created.server.id, name: req.body.name, game, serverType: serverTypeKey(cfg.envType), ownerId: owner.id, nodeId: node.id, memoryMb, cpuLimit, storageLimitMb, ipAddress, port, storageLocation: req.body.storageLocation || '/var/lib/docker', subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
     writeDb(db); req.flash('success', 'Server created on node.');
   } catch (e) { req.flash('error', e.message); }
   res.redirect('/admin');

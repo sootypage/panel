@@ -10,18 +10,45 @@
       "networkPorts": [],
       "databases": [],
       "subdomains": [],
-      "createdAt": "2026-04-28T12:25:29.915Z"
+      "createdAt": "2026-04-28T12:25:29.915Z",
+      "subdomainSlots": 999,
+      "portSlots": 999,
+      "backupSlots": 999,
+      "databaseSlots": 999
+    },
+    {
+      "id": "66d6b38e-743c-4a56-984d-606349092dda",
+      "email": "dylanpage081@gmail.com",
+      "name": "Admin",
+      "role": "admin",
+      "subdomainSlots": 999,
+      "portSlots": 999,
+      "backupSlots": 999,
+      "databaseSlots": 999,
+      "subusers": [],
+      "networkPorts": [],
+      "databases": [],
+      "subdomains": [],
+      "backupSchedule": {
+        "enabled": false,
+        "interval": "off",
+        "keepLatest": 1,
+        "lastRunAt": null,
+        "nextRunAt": null
+      },
+      "createdAt": "2026-06-15T23:54:51.193Z",
+      "passwordHash": "$2a$10$be7H6Myim6FB/LTIzDmB.urTL2ORY/ey8jgEk8GwOHJCBc//Q23DK"
     }
   ],
   "nodes": [
     {
-      "id": "aa7c2852-e9f1-47db-88c6-f36466de23e9",
-      "name": "node 1",
-      "url": "http://38.87.117.169:4100",
-      "publicIp": "38.87.117.169",
-      "token": "dc7894bc35915bf831018f932586ae3bc1e21b26fbf2ffd7ef1fa6944616eca8",
-      "location": "CogentDC - Frankfurt am Main - Germany",
-      "createdAt": "2026-04-28T12:26:50.880Z"
+      "id": "5a286c84-0c74-4871-8d71-ff55bcd98ae7",
+      "name": "Forge Server",
+      "url": "http://127.0.0.1:4100",
+      "publicIp": "127.0.0.1",
+      "token": "hferhfer88u934q8yu84hf4884jjf4944",
+      "location": "Unknown",
+      "createdAt": "2026-06-16T00:01:47.935Z"
     }
   ],
   "servers": [],
