@@ -120,7 +120,7 @@
       <label>Memory limit MB</label><input name="memoryMb" id="memoryInput" type="number" value="2048">
       <label>CPU limit</label><input name="cpuLimit" type="number" step="0.25" value="1">
       <label>Storage limit MB</label><input name="storageLimitMb" id="storageInput" type="number" value="10240">
-      <label>Storage location</label><select name="storageLocation"><option value="/mnt/ssd1">SSD 1 (/mnt/ssd1)</option><option value="/mnt/ssd2">SSD 2 (/mnt/ssd2)</option><option value="/var/lib/docker">Default (/var/lib/docker)</option></select>
+      <label>Storage location</label><select name="storageLocation" id="storageLocationSelect"><option value="/var/lib/docker">Default (/var/lib/docker)</option></select>
       <label>Server IP</label><input name="ipAddress" placeholder="Leave blank to use node public IP">
       <label>Public port</label><input name="port" id="portInput" type="number" value="25565">
       <button class="primary span">Create server</button>
@@ -133,7 +133,7 @@
   <div class="card">
     <h2>Edit server resources</h2>
     <p class="muted">Changing RAM/CPU/port recreates the Docker container but keeps the same /data files.</p>
-    <table><thead><tr><th>Server</th><th>Owner</th><th>RAM MB</th><th>CPU</th><th>Storage MB</th><th>Port</th><th>Save</th></tr></thead><tbody>
+    <table><thead><tr><th>Server</th><th>Owner</th><th>RAM MB</th><th>CPU</th><th>Storage MB</th><th>Port</th><th>Actions</th></tr></thead><tbody>
       <% db.servers.forEach(s => { const owner = db.users.find(u => u.id === s.ownerId); %>
         <tr>
           <td><%= s.name %></td>
@@ -143,7 +143,12 @@
             <td><input name="cpuLimit" type="number" step="0.25" value="<%= s.cpuLimit || 1 %>"></td>
             <td><input name="storageLimitMb" type="number" value="<%= s.storageLimitMb || 10240 %>"></td>
             <td><input name="port" type="number" value="<%= s.port || 25565 %>"></td>
-            <td><button class="small-btn">Save</button></td>
+            <td>
+              <button class="small-btn">Save</button>
+              <form method="post" action="/admin/servers/<%= s.id %>/delete" class="inline-form" onsubmit="return confirm('Delete server <%= s.name %>? This will remove the Docker container and all files.');">
+                <button type="submit" class="small-btn danger">Delete</button>
+              </form>
+            </td>
           </form>
         </tr>
       <% }) %>
@@ -178,7 +183,7 @@
       <label>RAM MB</label><input name="memoryMb" type="number" value="2048">
       <label>CPU</label><input name="cpuLimit" type="number" step="0.25" value="1">
       <label>Storage MB</label><input name="storageLimitMb" type="number" value="10240">
-      <label>Storage location</label><select name="storageLocation"><option value="/mnt/ssd1">SSD 1 (/mnt/ssd1)</option><option value="/mnt/ssd2">SSD 2 (/mnt/ssd2)</option><option value="/var/lib/docker">Default (/var/lib/docker)</option></select>
+      <label>Storage location</label><select name="storageLocation" id="importStorageLocationSelect"><option value="/var/lib/docker">Default (/var/lib/docker)</option></select>
       <label>Managed recreate</label><label class="check-card"><input name="recreateManaged" type="checkbox"> <span>Recreate container with panel limits and same data mount after import</span><small>Leave off to only link the existing container.</small></label>
       <button class="primary span">Import container</button>
     </form>
@@ -292,6 +297,48 @@ activateTab((location.hash || '#overview').replace('#',''));
       if (hint) hint.textContent = `${o.textContent.trim()} uses ${o.dataset.image}, port ${o.dataset.port}, and add-ons: ${o.dataset.addons || 'none'}.`;
     };
     type.addEventListener('change', apply); apply();
+  }
+  
+  // Load storage locations when node is selected
+  const nodeSelect = document.querySelector('select[name="nodeId"]');
+  const storageLocationSelect = document.getElementById('storageLocationSelect');
+  if (nodeSelect && storageLocationSelect) {
+    async function loadStorageLocations() {
+      const nodeId = nodeSelect.value;
+      if (!nodeId) return;
+      try {
+        const r = await fetch(`/admin/nodes/${encodeURIComponent(nodeId)}/storage-locations`);
+        const data = await r.json();
+        if (data.ok && data.locations) {
+          storageLocationSelect.innerHTML = data.locations.map(loc => `<option value="${loc}">${loc}</option>`).join('');
+        }
+      } catch (e) {
+        console.error('Failed to load storage locations:', e);
+      }
+    }
+    nodeSelect.addEventListener('change', loadStorageLocations);
+    loadStorageLocations(); // Load on page load
+  }
+  
+  // Load storage locations for import Docker form
+  const importNodeSelect = document.getElementById('importNodeSelect');
+  const importStorageLocationSelect = document.getElementById('importStorageLocationSelect');
+  if (importNodeSelect && importStorageLocationSelect) {
+    async function loadImportStorageLocations() {
+      const nodeId = importNodeSelect.value;
+      if (!nodeId) return;
+      try {
+        const r = await fetch(`/admin/nodes/${encodeURIComponent(nodeId)}/storage-locations`);
+        const data = await r.json();
+        if (data.ok && data.locations) {
+          importStorageLocationSelect.innerHTML = data.locations.map(loc => `<option value="${loc}">${loc}</option>`).join('');
+        }
+      } catch (e) {
+        console.error('Failed to load storage locations:', e);
+      }
+    }
+    importNodeSelect.addEventListener('change', loadImportStorageLocations);
+    loadImportStorageLocations(); // Load on page load
   }
   const scan = document.getElementById('scanDockerBtn');
   if (scan) scan.addEventListener('click', async () => {

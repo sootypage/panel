@@ -611,7 +611,7 @@
     <form method="post" action="/servers/<%= server.id %>/network/ports" class="form settings-grid mt-12">
       <label>Extra port</label><input name="port" type="number" min="1" max="65535" placeholder="25566" required>
       <label>Container port</label><input name="containerPort" type="number" min="1" max="65535" placeholder="Same as public port">
-      <label>Type</label><select name="type"><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+      <label>Type</label><select name="type"><option value="tcp">TCP</option><option value="udp">UDP</option><option value="both">Both TCP & UDP</option></select>
       <label>Notes</label><input name="notes" placeholder="Voice chat, Dynmap, extra service">
       <div class="span"><button class="primary" <%= (ownerUser.role !== 'admin' && usedPortSlots >= totalPortSlots) ? 'disabled' : '' %>>Add port</button></div>
     </form>
@@ -660,21 +660,31 @@
 
 <section id="tab-database" class="tab-panel">
   <div class="card">
-    <div class="card-title-row"><h2>Databases</h2><p class="muted">Add database records for this server.</p></div>
-    <form method="post" action="/servers/<%= server.id %>/databases" class="form settings-grid">
-      <label>Name</label><input name="name" placeholder="survival_db">
-      <label>Engine</label><select name="engine"><option value="mysql">MySQL/MariaDB</option><option value="postgres">PostgreSQL</option></select>
-      <label>Username</label><input name="username" placeholder="db_user">
-      <label>Host</label><input name="host" value="localhost">
-      <label>Port</label><input name="port" value="3306">
-      <div class="span"><button class="primary">Add database</button></div>
-    </form>
-    <table><thead><tr><th>Name</th><th>Engine</th><th>Host</th><th>User</th><th>Actions</th></tr></thead><tbody>
+    <div class="card-title-row"><h2>Databases</h2><p class="muted">Add database records for this server. One database per server.</p></div>
+    <div class="chips"><span>Database slots: <%= usedDatabaseSlots %>/<%= totalDatabaseSlots %></span></div>
+    <% if ((server.databases || []).length >= 1) { %>
+      <p class="muted">You already have a database for this server. One database per server is allowed.</p>
+    <% } else { %>
+      <form method="post" action="/servers/<%= server.id %>/databases" class="form settings-grid">
+        <label>Database name</label><input name="name" placeholder="survival_db" required>
+        <label>Engine</label><select name="engine" required>
+          <option value="mysql">MySQL</option>
+          <option value="mariadb">MariaDB</option>
+          <option value="postgresql">PostgreSQL</option>
+        </select>
+        <label>Username</label><input name="username" placeholder="db_user" required>
+        <label>Password</label><input name="password" type="password" placeholder="db_password" required>
+        <label>Host</label><input name="host" value="localhost" readonly>
+        <label>Port</label><input name="port" type="number" placeholder="Auto-assigned" readonly>
+        <div class="span"><button class="primary" <%= (ownerUser.role !== 'admin' && usedDatabaseSlots >= totalDatabaseSlots) ? 'disabled' : '' %>>Create database</button></div>
+      </form>
+    <% } %>
+    <table><thead><tr><th>Name</th><th>Engine</th><th>Host</th><th>Port</th><th>User</th><th>Actions</th></tr></thead><tbody>
       <% (server.databases || []).forEach(db => { %>
-        <tr><td><%= db.name %></td><td><%= db.engine %></td><td><%= db.host %>:<%= db.port %></td><td><%= db.username %></td><td><form method="post" action="/servers/<%= server.id %>/databases/remove"><input type="hidden" name="databaseId" value="<%= db.id %>"><button class="danger small-btn">Remove</button></form></td></tr>
+        <tr><td><%= db.name %></td><td><%= db.engine %></td><td><%= db.host %></td><td><%= db.port %></td><td><%= db.username %></td><td><form method="post" action="/servers/<%= server.id %>/databases/remove"><input type="hidden" name="databaseId" value="<%= db.id %>"><button class="danger small-btn">Remove</button></form></td></tr>
       <% }) %>
     </tbody></table>
-    <p class="muted small">Automatic MySQL/PostgreSQL creation can be wired to a DB node later.</p>
+    <p class="muted small">Databases are created on database nodes. Port is auto-assigned to avoid conflicts.</p>
   </div>
 </section>
 

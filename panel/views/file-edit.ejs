@@ -10,8 +10,95 @@
 <section class="card">
   <form method="post" action="/servers/<%= server.id %>/files/edit" class="form">
     <input type="hidden" name="path" value="<%= file.path %>">
-    <textarea name="content" class="file-editor"><%= file.content %></textarea>
-    <button class="primary">Save file</button>
+    <div class="editor-container">
+      <div class="line-numbers" id="lineNumbers"></div>
+      <textarea name="content" class="file-editor" id="fileEditor" spellcheck="false" data-original="<%= file.content.replace(/"/g, '&quot;').replace(/'/g, '&#39;') %>"><%= file.content %></textarea>
+    </div>
+    <div class="button-row">
+      <button class="primary">Save file</button>
+      <button type="button" class="secondary" id="resetBtn">Reset</button>
+    </div>
   </form>
 </section>
+
+<style>
+.editor-container {
+  display: flex;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+.line-numbers {
+  background: #252526;
+  color: #858585;
+  padding: 10px 5px;
+  text-align: right;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  min-width: 40px;
+  user-select: none;
+  overflow: hidden;
+}
+.file-editor {
+  flex: 1;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border: none;
+  padding: 10px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 500px;
+  outline: none;
+}
+.file-editor:focus {
+  outline: none;
+}
+</style>
+
+<script>
+const editor = document.getElementById('fileEditor');
+const lineNumbers = document.getElementById('lineNumbers');
+
+function updateLineNumbers() {
+  const lines = editor.value.split('\n').length;
+  lineNumbers.innerHTML = Array(lines).fill(0).map((_, i) => i + 1).join('<br>');
+}
+
+editor.addEventListener('input', updateLineNumbers);
+editor.addEventListener('scroll', () => {
+  lineNumbers.scrollTop = editor.scrollTop;
+});
+
+// Sync scroll
+editor.addEventListener('scroll', () => {
+  lineNumbers.scrollTop = editor.scrollTop;
+});
+
+// Tab key support
+editor.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    editor.value = editor.value.substring(0, start) + '  ' + editor.value.substring(end);
+    editor.selectionStart = editor.selectionEnd = start + 2;
+    updateLineNumbers();
+  }
+});
+
+// Reset button
+document.getElementById('resetBtn').addEventListener('click', () => {
+  if (confirm('Reset to original content? All unsaved changes will be lost.')) {
+    editor.value = editor.dataset.original;
+    updateLineNumbers();
+  }
+});
+
+// Initial line numbers
+updateLineNumbers();
+</script>
 <%- include('layout-bottom') %>

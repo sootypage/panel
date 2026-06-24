@@ -20,6 +20,8 @@
     "uuid": "^9.0.1",
     "express-rate-limit": "^7.4.1",
     "pg": "^8.13.1",
-    "stripe": "^17.2.0"
+    "stripe": "^17.2.0",
+    "speakeasy": "^2.0.0",
+    "qrcode": "^1.5.3"
   }
 }

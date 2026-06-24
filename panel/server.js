@@ -534,13 +534,60 @@ app.get('/status', async (req, res) => {
   const db = readDb();
   const nodesWithStatus = await Promise.all(db.nodes.map(async (node) => {
     const serversOnNode = db.servers.filter(s => s.nodeId === node.id);
+    const previousStatus = node.status || 'unknown';
     try {
       const start = Date.now();
       await callAgent(node, '/health', { timeout: 5000 });
       const latency = Date.now() - start;
-      return { ...node, status: 'up', latencyMs: latency, servers: serversOnNode.length, error: null };
+      const newStatus = 'up';
+      
+      // Send Discord webhook if node came back online
+      if (previousStatus === 'down' || previousStatus === 'unknown') {
+        await sendDiscordWebhook(
+          'Node Online',
+          `Node "${node.name}" is now online`,
+          0x00ff00,
+          [
+            { name: 'Node', value: node.name },
+            { name: 'Location', value: node.location || 'Unknown' },
+            { name: 'Latency', value: `${latency}ms` },
+            { name: 'Servers', value: serversOnNode.length.toString() }
+          ]
+        );
+      }
+      
+      // Update node status in database
+      node.status = newStatus;
+      node.lastOnlineAt = new Date().toISOString();
+      node.latencyMs = latency;
+      writeDb(db);
+      
+      return { ...node, status: newStatus, latencyMs: latency, servers: serversOnNode.length, error: null };
     } catch (e) {
-      return { ...node, status: 'down', latencyMs: null, servers: serversOnNode.length, error: e.message };
+      const newStatus = 'down';
+      
+      // Send Discord webhook if node went offline
+      if (previousStatus === 'up' || previousStatus === 'unknown') {
+        await sendDiscordWebhook(
+          'Node Offline',
+          `Node "${node.name}" is now offline`,
+          0xff0000,
+          [
+            { name: 'Node', value: node.name },
+            { name: 'Location', value: node.location || 'Unknown' },
+            { name: 'Error', value: e.message },
+            { name: 'Servers', value: serversOnNode.length.toString() }
+          ]
+        );
+      }
+      
+      // Update node status in database
+      node.status = newStatus;
+      node.lastDownAt = new Date().toISOString();
+      node.latencyMs = null;
+      writeDb(db);
+      
+      return { ...node, status: newStatus, latencyMs: null, servers: serversOnNode.length, error: e.message };
     }
   }));
   res.render('status', { title: 'Network Status', nodes: nodesWithStatus, servers: db.servers });
@@ -708,6 +755,25 @@ app.post('/servers/:id/backups/create', requireLogin, async (req, res) => {
       req.flash('error', `No backup slots left. Used ${used}/${limit}. Delete a backup or buy more backup slots.`);
       return res.redirect(`/servers/${ctx.server.id}#backups`);
     }
+    
+    // Apply retention policy before creating new backup
+    const keepLatest = ctx.server.backupSchedule && ctx.server.backupSchedule.keepLatest ? ctx.server.backupSchedule.keepLatest : 1;
+    const backupsList = existing.backups || [];
+    if (backupsList.length >= keepLatest) {
+      // Sort by creation date (oldest first)
+      const sortedBackups = backupsList.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      const toDelete = sortedBackups.slice(0, backupsList.length - keepLatest + 1);
+      
+      // Delete old backups
+      for (const backup of toDelete) {
+        try {
+          await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups/${encodeURIComponent(backup.name)}`, { method: 'DELETE', timeout: TIMEOUT * 30 });
+        } catch (e) {
+          console.error(`Failed to delete old backup ${backup.name}:`, e.message);
+        }
+      }
+    }
+    
     await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`, { method: 'POST', timeout: TIMEOUT * 60 });
     req.flash('success', 'Backup created.');
   } catch (e) { req.flash('error', e.message); }
@@ -1014,10 +1080,63 @@ app.post('/servers/:id/network/ports/remove', requireLogin, async (req, res) => 
 app.post('/servers/:id/databases', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
   ctx.server.databases = ctx.server.databases || [];
+  
+  // Enforce one database per server
+  if (ctx.server.databases.length >= 1) {
+    req.flash('error', 'One database per server is allowed.');
+    return res.redirect(`/servers/${ctx.server.id}#database`);
+  }
+  
+  // Check database slots
+  const owner = ctx.db.users.find(u => u.id === ctx.server.ownerId) || ctx.user;
+  const usedDatabases = ctx.db.servers.reduce((sum, s) => sum + (s.databases || []).length, 0);
+  const databaseLimit = userDatabaseLimit(owner);
+  if (owner.role !== 'admin' && usedDatabases >= databaseLimit) {
+    req.flash('error', `No database slots left. Used ${usedDatabases}/${databaseLimit}. Ask an admin for more database slots.`);
+    return res.redirect(`/servers/${ctx.server.id}#database`);
+  }
+  
   const name = String(req.body.name || `${ctx.server.name}_db`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 48);
-  ctx.server.databases.push({ id: uuidv4(), name, engine: req.body.engine || 'mysql', username: req.body.username || name, host: req.body.host || 'localhost', port: req.body.port || '3306', subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
+  const engine = req.body.engine || 'mysql';
+  
+  // Auto-select port based on engine
+  let defaultPort = 3306;
+  if (engine === 'postgresql') defaultPort = 5432;
+  if (engine === 'mariadb') defaultPort = 3307;
+  
+  // Find an available port
+  const allDbPorts = ctx.db.servers.flatMap(s => (s.databases || []).map(d => d.port));
+  let port = defaultPort;
+  const maxPortAttempts = 100;
+  let attempts = 0;
+  while (attempts < maxPortAttempts && allDbPorts.includes(port)) {
+    port++;
+    attempts++;
+  }
+  
+  // Auto-select database node (nodes with location containing 'database' or first available)
+  let dbNode = ctx.db.nodes.find(n => String(n.location || '').toLowerCase().includes('database'));
+  if (!dbNode) dbNode = ctx.db.nodes[0];
+  if (!dbNode) {
+    req.flash('error', 'No node available for database creation.');
+    return res.redirect(`/servers/${ctx.server.id}#database`);
+  }
+  
+  const dbRecord = { 
+    id: uuidv4(), 
+    name, 
+    engine, 
+    username: req.body.username || name, 
+    password: req.body.password || crypto.randomBytes(16).toString('hex'),
+    host: 'localhost', 
+    port,
+    nodeId: dbNode.id,
+    createdAt: new Date().toISOString() 
+  };
+  
+  ctx.server.databases.push(dbRecord);
   writeDb(ctx.db);
-  req.flash('success', 'Database record added. This stores DB details now; automatic DB server creation can be wired next.');
+  req.flash('success', `Database created on node ${dbNode.name}. Port: ${port}`);
   res.redirect(`/servers/${ctx.server.id}#database`);
 });
 app.post('/servers/:id/databases/remove', requireLogin, async (req, res) => {
@@ -1347,6 +1466,19 @@ app.get('/admin/import-docker/containers', requireLogin, requireAdmin, async (re
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/admin/nodes/:nodeId/storage-locations', requireLogin, requireAdmin, async (req, res) => {
+  const db = readDb();
+  const node = db.nodes.find(n => n.id === req.params.nodeId);
+  if (!node) return res.status(404).json({ error: 'Node not found.' });
+  try {
+    const data = await callAgent(node, '/storage-locations', { timeout: TIMEOUT * 5 });
+    res.json({ ok: true, locations: data.locations || [] });
+  } catch (e) {
+    // If agent doesn't support storage-locations endpoint, return defaults
+    res.json({ ok: true, locations: ['/var/lib/docker', '/mnt/ssd1', '/mnt/ssd2'] });
+  }
+});
+
 app.post('/admin/import-docker', requireLogin, requireAdmin, async (req, res) => {
   const db = readDb();
   const node = db.nodes.find(n => n.id === req.body.nodeId) || db.nodes[0];
@@ -1410,6 +1542,21 @@ app.post('/admin/servers/:id/resources', requireLogin, requireAdmin, async (req,
   catch (e) { req.flash('error', `Saved in panel but agent failed to recreate container: ${e.message}`); }
   writeDb(db);
   req.flash('success', 'Server resources updated.');
+  res.redirect('/admin#resources');
+});
+
+app.post('/admin/servers/:id/delete', requireLogin, requireAdmin, async (req, res) => {
+  const db = readDb();
+  const server = db.servers.find(s => s.id === req.params.id);
+  if (!server) { req.flash('error', 'Server not found.'); return res.redirect('/admin#resources'); }
+  const node = db.nodes.find(n => n.id === server.nodeId);
+  if (!node) { req.flash('error', 'Node not found.'); return res.redirect('/admin#resources'); }
+  try {
+    await callAgent(node, `/servers/${server.agentServerId}/delete`, { method: 'POST', timeout: TIMEOUT * 60 });
+    db.servers = db.servers.filter(s => s.id !== server.id);
+    writeDb(db);
+    req.flash('success', 'Server deleted. Docker container and all files were removed.');
+  } catch (e) { req.flash('error', e.message); }
   res.redirect('/admin#resources');
 });
 

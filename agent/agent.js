@@ -441,6 +441,54 @@ app.get('/health', auth, async (req, res) => {
   res.json({ ok: true, name: AGENT_NAME, location: AGENT_LOCATION, dockerOk, dockerVersion, time: new Date().toISOString() });
 });
 
+app.get('/storage-locations', auth, async (req, res) => {
+  const commonLocations = [
+    '/var/lib/docker',
+    '/mnt/ssd1',
+    '/mnt/ssd2',
+    '/mnt/ssd3',
+    '/mnt/nvme0n1',
+    '/mnt/nvme0n2',
+    '/mnt/hdd1',
+    '/mnt/hdd2',
+    '/home/docker',
+    '/opt/docker'
+  ];
+  
+  const availableLocations = [];
+  
+  for (const loc of commonLocations) {
+    try {
+      if (fs.existsSync(loc)) {
+        const stats = fs.statSync(loc);
+        if (stats.isDirectory()) {
+          availableLocations.push(loc);
+        }
+      }
+    } catch (e) {
+      // Location doesn't exist or isn't accessible, skip it
+    }
+  }
+  
+  // Always include the default SERVERS_DIR if it's not already in the list
+  if (availableLocations.length === 0 || !availableLocations.includes(SERVERS_DIR)) {
+    try {
+      if (fs.existsSync(SERVERS_DIR)) {
+        availableLocations.push(SERVERS_DIR);
+      }
+    } catch (e) {
+      // SERVERS_DIR doesn't exist, skip
+    }
+  }
+  
+  // If no locations found, return a default
+  if (availableLocations.length === 0) {
+    availableLocations.push('/var/lib/docker');
+  }
+  
+  res.json({ ok: true, locations: availableLocations });
+});
+
 app.post('/servers', auth, async (req, res) => {
   const db = readDb();
   const serverId = id();

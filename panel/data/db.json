@@ -37,7 +37,7 @@
         "nextRunAt": null
       },
       "createdAt": "2026-06-15T23:54:51.193Z",
-      "passwordHash": "$2a$10$be7H6Myim6FB/LTIzDmB.urTL2ORY/ey8jgEk8GwOHJCBc//Q23DK"
+      "passwordHash": "$2a$10$hQiqZdJ3p0JublQlP1wkZ.MJaFTdF3kgQs9iiKd3OmaW/TBFvrc5S"
     }
   ],
   "nodes": [
@@ -48,11 +48,17 @@
       "publicIp": "127.0.0.1",
       "token": "hferhfer88u934q8yu84hf4884jjf4944",
       "location": "Unknown",
-      "createdAt": "2026-06-16T00:01:47.935Z"
+      "createdAt": "2026-06-16T00:01:47.935Z",
+      "status": "up",
+      "lastDownAt": "2026-06-24T03:38:01.515Z",
+      "latencyMs": 1275,
+      "lastOnlineAt": "2026-06-24T03:39:51.940Z"
     }
   ],
   "servers": [],
   "audit": [],
   "apiKeys": [],
-  "plans": []
+  "plans": [],
+  "subscriptions": [],
+  "payments": []
 }
