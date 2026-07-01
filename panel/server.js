@@ -1051,18 +1051,24 @@ app.get('/status', async (req, res) => {
 });
 
 app.get('/servers/:id', requireLogin, async (req, res) => {
-  const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
-  const filePath = req.query.path || '';
-  let live = null, files = null, backups = null, plugins = null, mods = null, settings = null, ftp = null, stats = null;
-  try { live = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}`); } catch (e) { live = { error: e.message }; }
-  try { files = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=${encodeURIComponent(filePath)}`); } catch (e) { files = { error: e.message, items: [], path: filePath, parent: '' }; }
-  try { backups = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`); } catch (e) { backups = { error: e.message, backups: [] }; }
-  try { plugins = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=plugins`); } catch (e) { plugins = { error: e.message, items: [] }; }
-  try { mods = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=mods`); } catch (e) { mods = { error: e.message, items: [] }; }
-  try { settings = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/settings`); } catch (e) { settings = { error: e.message, settings: {} }; }
-  try { ftp = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/ftp`); } catch (e) { ftp = { error: e.message, enabled: false }; }
-  try { stats = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/stats`); } catch (e) { stats = { ok: false, error: e.message, cpu: 0, memory: { usage: '0B', percent: 0 }, network: { rx: '0B', tx: '0B' }, disk: { read: '0B', write: '0B' } }; }
-  res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user, allNodes: ctx.db.nodes, stats });
+  try {
+    const ctx = getOwnedServer(req, res);
+    if (ctx.error) return ctx.error();
+    const filePath = req.query.path || '';
+    let live = null, files = null, backups = null, plugins = null, mods = null, settings = null, ftp = null, stats = null;
+    try { live = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}`); } catch (e) { live = { error: e.message }; }
+    try { files = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=${encodeURIComponent(filePath)}`); } catch (e) { files = { error: e.message, items: [], path: filePath, parent: '' }; }
+    try { backups = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`); } catch (e) { backups = { error: e.message, backups: [] }; }
+    try { plugins = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=plugins`); } catch (e) { plugins = { error: e.message, items: [] }; }
+    try { mods = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=mods`); } catch (e) { mods = { error: e.message, items: [] }; }
+    try { settings = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/settings`); } catch (e) { settings = { error: e.message, settings: {} }; }
+    try { ftp = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/ftp`); } catch (e) { ftp = { error: e.message, enabled: false }; }
+    try { stats = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/stats`); } catch (e) { stats = { ok: false, error: e.message, cpu: 0, memory: { usage: '0B', percent: 0 }, network: { rx: '0B', tx: '0B' }, disk: { read: '0B', write: '0B' } }; }
+    res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user, allNodes: ctx.db.nodes, stats });
+  } catch (e) {
+    console.error('Server page error:', e);
+    res.status(500).render('error', { title: 'Internal Server Error', message: e.message });
+  }
 });
 
 app.post('/servers/:id/action', requireLogin, async (req, res) => {
