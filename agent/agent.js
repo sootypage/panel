@@ -376,6 +376,8 @@ function buildDockerArgs(server) {
 }
 async function removeContainer(name) {
   try { await docker(['rm', '-f', name], 60000); } catch (e) {}
+  // Also try to disconnect from bridge network to clean up stale endpoints
+  try { await docker(['network', 'disconnect', 'bridge', name], 30000); } catch (e) {}
 }
 async function recreateContainer(server) {
   await removeContainer(server.containerName);
@@ -439,6 +441,58 @@ app.get('/health', auth, async (req, res) => {
   let dockerVersion = 'unknown';
   try { dockerVersion = (await docker(['--version'])).stdout.trim(); } catch (e) { dockerOk = false; }
   res.json({ ok: true, name: AGENT_NAME, location: AGENT_LOCATION, dockerOk, dockerVersion, time: new Date().toISOString() });
+});
+
+app.get('/servers/:serverId/stats', auth, async (req, res) => {
+  const server = getServer(req.params.serverId);
+  if (!server) return res.status(404).json({ error: 'Server not found' });
+  
+  try {
+    const containerName = server.containerName;
+    
+    // Get container stats - try JSON format first, fallback to no format
+    let stats;
+    try {
+      stats = await docker(['stats', '--no-stream', '--format', 'json', containerName]);
+    } catch (e) {
+      // Fallback for older Docker versions without --format json
+      stats = await docker(['stats', '--no-stream', containerName]);
+    }
+    
+    const statsData = JSON.parse(stats.stdout);
+    
+    if (statsData && statsData.length > 0) {
+      const s = statsData[0];
+      const cpuPercent = s.CPUPerc ? parseFloat(s.CPUPerc) : 0;
+      const memUsage = s.MemUsage ? s.MemUsage.split(' / ')[0] : '0B';
+      const memPercent = s.MemPerc ? parseFloat(s.MemPerc) : 0;
+      const netRx = s.NetIO ? s.NetIO.split(' / ')[0] : '0B';
+      const netTx = s.NetIO ? s.NetIO.split(' / ')[1] : '0B';
+      const blockRead = s.BlockIO ? s.BlockIO.split(' / ')[0] : '0B';
+      const blockWrite = s.BlockIO ? s.BlockIO.split(' / ')[1] : '0B';
+      
+      res.json({
+        ok: true,
+        cpu: cpuPercent,
+        memory: {
+          usage: memUsage,
+          percent: memPercent
+        },
+        network: {
+          rx: netRx,
+          tx: netTx
+        },
+        disk: {
+          read: blockRead,
+          write: blockWrite
+        }
+      });
+    } else {
+      res.json({ ok: true, cpu: 0, memory: { usage: '0B', percent: 0 }, network: { rx: '0B', tx: '0B' }, disk: { read: '0B', write: '0B' } });
+    }
+  } catch (e) {
+    res.json({ ok: true, cpu: 0, memory: { usage: '0B', percent: 0 }, network: { rx: '0B', tx: '0B' }, disk: { read: '0B', write: '0B' }, error: e.message });
+  }
 });
 
 app.get('/storage-locations', auth, async (req, res) => {
@@ -1015,6 +1069,7 @@ app.post('/servers/:id/delete', auth, async (req, res) => {
   if (index === -1) return res.status(404).json({ error: 'Server not found.' });
   const server = db.servers[index];
   try { await docker(['rm', '-f', server.containerName], 120000); } catch {}
+  try { await docker(['network', 'disconnect', 'bridge', server.containerName], 30000); } catch {}
   try { if (server.folder) fs.rmSync(server.folder, { recursive: true, force: true }); } catch {}
   try { fs.rmSync(serverBackupDir(server), { recursive: true, force: true }); } catch {}
   db.servers.splice(index, 1);
