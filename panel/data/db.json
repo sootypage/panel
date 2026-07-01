@@ -14,7 +14,10 @@
       "subdomainSlots": 999,
       "portSlots": 999,
       "backupSlots": 999,
-      "databaseSlots": 999
+      "databaseSlots": 999,
+      "creditBalance": 0,
+      "totalSpent": 0,
+      "avatar": null
     },
     {
       "id": "66d6b38e-743c-4a56-984d-606349092dda",
@@ -37,7 +40,10 @@
         "nextRunAt": null
       },
       "createdAt": "2026-06-15T23:54:51.193Z",
-      "passwordHash": "$2a$10$hQiqZdJ3p0JublQlP1wkZ.MJaFTdF3kgQs9iiKd3OmaW/TBFvrc5S"
+      "passwordHash": "$2a$10$EtzjBUWoVaAeKOQcXVFpmOg7mHW5wH0oIOElbpQbiLSRlgrquf1yW",
+      "creditBalance": 10000,
+      "totalSpent": 0,
+      "avatar": null
     }
   ],
   "nodes": [
@@ -49,9 +55,9 @@
       "token": "hferhfer88u934q8yu84hf4884jjf4944",
       "location": "Unknown",
       "createdAt": "2026-06-16T00:01:47.935Z",
-      "status": "up",
-      "lastDownAt": "2026-06-24T03:38:01.515Z",
-      "latencyMs": 1275,
+      "status": "down",
+      "lastDownAt": "2026-07-01T01:11:54.225Z",
+      "latencyMs": null,
       "lastOnlineAt": "2026-06-24T03:39:51.940Z"
     }
   ],
@@ -60,5 +66,36 @@
   "apiKeys": [],
   "plans": [],
   "subscriptions": [],
-  "payments": []
+  "payments": [],
+  "shopItems": [
+    {
+      "id": "62a229d2-1174-4bb0-a0e6-05e0f5ad7102",
+      "name": "Minecraft 4gb",
+      "description": "minecraft server",
+      "price": 8,
+      "nodeId": "5a286c84-0c74-4871-8d71-ff55bcd98ae7",
+      "game": "minecraft",
+      "image": "itzg/minecraft-server:java21",
+      "memoryMb": 4096,
+      "cpuLimit": 2,
+      "storageLimitMb": 20480,
+      "port": 15151,
+      "version": "1.21.11",
+      "storageLocation": "/var/lib/docker",
+      "createdAt": "2026-07-01T01:14:01.115Z"
+    }
+  ],
+  "shopPurchases": [],
+  "shopEnabled": true,
+  "passwordResetTokens": [],
+  "signUpEnabled": true,
+  "smtpConfig": {
+    "enabled": false,
+    "host": "",
+    "port": 587,
+    "secure": false,
+    "user": "",
+    "password": "",
+    "from": ""
+  }
 }

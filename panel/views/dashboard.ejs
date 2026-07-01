@@ -7,22 +7,68 @@
   <div class="stat"><strong><%= servers.length %></strong><span>Servers</span></div>
 </section>
 
+<% if (user.role === 'admin') { %>
+<section class="card">
+  <h2>Bulk Actions</h2>
+  <p class="muted">Select multiple servers to perform bulk actions.</p>
+  <form method="post" action="/dashboard/bulk-action" id="bulkActionForm" class="form inline-form-wide">
+    <select name="action" required>
+      <option value="">Select action...</option>
+      <option value="start">Start all selected</option>
+      <option value="stop">Stop all selected</option>
+      <option value="restart">Restart all selected</option>
+    </select>
+    <button class="primary">Execute</button>
+  </form>
+</section>
+<% } %>
+
+<section class="card">
+  <h2>Account Security</h2>
+  <div class="chips">
+    <span>2FA: <%= user.twoFactorEnabled ? '✅ Enabled' : '❌ Disabled' %></span>
+  </div>
+  <div class="button-row mt-12">
+    <% if (!user.twoFactorEnabled) { %>
+      <a class="button primary" href="/2fa/setup">Enable 2FA</a>
+    <% } else { %>
+      <button class="danger" onclick="document.getElementById('disable2faForm').style.display = 'block'">Disable 2FA</button>
+    <% } %>
+  </div>
+  
+  <% if (user.twoFactorEnabled) { %>
+    <form id="disable2faForm" method="post" action="/2fa/disable" class="form mt-12" style="display:none;" onsubmit="return confirm('Are you sure you want to disable 2FA? This will make your account less secure.')">
+      <label>2FA Code</label><input name="token" type="text" placeholder="123456" required pattern="[0-9]{6}" maxlength="6">
+      <label>Password</label><input name="password" type="password" placeholder="Confirm your password" required>
+      <button class="danger">Disable 2FA</button>
+      <button type="button" class="secondary" onclick="document.getElementById('disable2faForm').style.display = 'none'">Cancel</button>
+    </form>
+  <% } %>
+</section>
+
 <section class="grid">
   <% if (!servers.length) { %>
     <div class="card"><h2>No servers yet</h2><p class="muted">Ask an admin to create a server for your account.</p></div>
   <% } %>
   <% servers.forEach(server => { const node = nodes.find(n => n.id === server.nodeId); %>
-    <a class="card server-card" href="/servers/<%= server.id %>">
-      <h2><%= server.name %></h2>
-      <p><%= server.game %></p>
-      <div class="chips">
-        <span>RAM <%= server.memoryMb %> MB</span>
-        <span>CPU <%= server.cpuLimit || 1 %></span>
-        <span>Storage <%= server.storageLimitMb || 0 %> MB</span>
-        <span><%= server.ipAddress || "IP not set" %>:<%= server.port %></span>
-        <span><%= node ? node.name : 'Unknown node' %></span>
-      </div>
-    </a>
+    <div class="card server-card">
+      <% if (user.role === 'admin') { %>
+        <div class="bulk-select">
+          <input type="checkbox" name="serverIds" value="<%= server.id %>" form="bulkActionForm">
+        </div>
+      <% } %>
+      <a href="/servers/<%= server.id %>">
+        <h2><%= server.name %></h2>
+        <p><%= server.game %></p>
+        <div class="chips">
+          <span>RAM <%= server.memoryMb %> MB</span>
+          <span>CPU <%= server.cpuLimit || 1 %></span>
+          <span>Storage <%= server.storageLimitMb || 0 %> MB</span>
+          <span><%= server.ipAddress || "IP not set" %>:<%= server.port %></span>
+          <span><%= node ? node.name : 'Unknown node' %></span>
+        </div>
+      </a>
+    </div>
   <% }) %>
 </section>
 <%- include('layout-bottom') %>

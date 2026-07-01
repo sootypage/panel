@@ -1,0 +1,20 @@
+<%- include('layout-top', { title }) %>
+<section class="hero">
+  <div>
+    <h1>Sign Up</h1>
+    <p>Create an account to get started.</p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Create Account</h2>
+  <form method="post" action="/register" class="form">
+    <label>Email</label><input name="email" type="email" required placeholder="your@email.com">
+    <label>Password</label><input name="password" type="password" required placeholder="••••••••">
+    <label>Confirm Password</label><input name="confirmPassword" type="password" required placeholder="••••••••">
+    <button type="submit" class="primary span">Sign Up</button>
+  </form>
+  <p class="muted">Already have an account? <a href="/login">Log in</a></p>
+</section>
+
+<%- include('layout-bottom') %>

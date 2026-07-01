@@ -1,0 +1,173 @@
+<%- include('layout-top', { title }) %>
+<section class="hero">
+  <div>
+    <h1>Server Shop</h1>
+    <p>Purchase game servers with credit or real money.</p>
+  </div>
+  <div class="stat"><strong>$<%= user.creditBalance.toFixed(2) %></strong><span>Credit Balance</span></div>
+</section>
+
+<% if (!shopEnabled) { %>
+<section class="card">
+  <h2>Shop Closed</h2>
+  <p class="muted">The shop is currently closed. Check back later.</p>
+</section>
+<% } else { %>
+<section class="card">
+  <h2>Available Servers</h2>
+  <div class="shop-grid">
+    <% shopItems.forEach(item => { %>
+      <div class="shop-item">
+        <h3><%= item.name %></h3>
+        <p class="muted"><%= item.description %></p>
+        <div class="shop-specs">
+          <span>RAM: <%= item.memoryMb %> MB</span>
+          <span>CPU: <%= item.cpuLimit %></span>
+          <span>Storage: <%= item.storageLimitMb %> MB</span>
+        </div>
+        <div class="shop-price">
+          <span class="price">$<%= item.price.toFixed(2) %></span>
+          <% if (item.price > 0 && user.creditBalance >= item.price) { %>
+            <span class="badge success">Can use credit</span>
+          <% } %>
+        </div>
+        <form method="post" action="/shop/purchase" class="shop-form">
+          <input type="hidden" name="itemId" value="<%= item.id %>">
+          <label>Server Name</label><input name="serverName" placeholder="My Server" required>
+          <label>Server Type</label><select name="serverType">
+            <option value="PAPER">Minecraft Paper</option>
+            <option value="PURPUR">Minecraft Purpur</option>
+            <option value="SPIGOT">Minecraft Spigot</option>
+            <option value="VANILLA">Minecraft Vanilla</option>
+            <option value="FABRIC">Minecraft Fabric</option>
+            <option value="FORGE">Minecraft Forge</option>
+            <option value="RUST">Rust</option>
+            <option value="VALHEIM">Valheim</option>
+            <option value="TERRARIA">Terraria</option>
+            <option value="FACTORIO">Factorio</option>
+          </select>
+          <label>Payment Method</label><select name="paymentMethod">
+            <option value="credit">Credit ($<%= user.creditBalance.toFixed(2) %> available)</option>
+            <option value="stripe">Credit Card (Stripe)</option>
+          </select>
+          <button type="submit" class="primary">Purchase</button>
+        </form>
+      </div>
+    <% }) %>
+    <% if (!shopItems.length) { %>
+      <p class="muted">No items available in the shop.</p>
+    <% } %>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Your Purchases</h2>
+  <% const purchases = (db.shopPurchases || []).filter(p => p.userId === user.id); %>
+  <% if (purchases.length) { %>
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Server</th>
+          <th>Price</th>
+          <th>Payment</th>
+          <th>Date</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% purchases.forEach(purchase => { %>
+          <tr>
+            <td><%= purchase.itemName %></td>
+            <td><%= purchase.serverName %></td>
+            <td>$<%= purchase.price.toFixed(2) %></td>
+            <td><%= purchase.paymentMethod === 'credit' ? 'Credit' : 'Card' %></td>
+            <td><%= new Date(purchase.createdAt).toLocaleDateString() %></td>
+            <td>
+              <span class="pill <%= purchase.status === 'active' ? 'success' : purchase.status === 'cancelled' ? 'danger' : 'default' %>"><%= purchase.status %></span>
+            </td>
+            <td>
+              <% if (purchase.status === 'active') { %>
+                <form action="/shop/cancel/<%= purchase.id %>" method="POST" onsubmit="return confirm('Cancel this purchase? Server will be deleted.')">
+                  <button type="submit" class="danger">Cancel</button>
+                </form>
+              <% } else { %>
+                <span class="muted">-</span>
+              <% } %>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } else { %>
+    <p class="muted">No purchases yet.</p>
+  <% } %>
+</section>
+<% } %>
+
+<style>
+.shop-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+.shop-item {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+}
+.shop-item h3 {
+  margin: 0 0 0.5rem 0;
+}
+.shop-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+  margin: 1rem 0;
+}
+.shop-specs span {
+  background: #f0f0f0;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+.shop-price {
+  margin: 1rem 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.shop-price .price {
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+.shop-price .badge {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+.shop-price .badge.success {
+  background: #d4edda;
+  color: #155724;
+}
+.shop-form {
+  text-align: left;
+  margin-top: 1rem;
+}
+.shop-form label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+}
+.shop-form input,
+.shop-form select {
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+</style>
+<%- include('layout-bottom') %>

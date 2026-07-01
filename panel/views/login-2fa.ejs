@@ -1,0 +1,16 @@
+<%- include('layout-top', { title }) %>
+<section class="hero">
+  <div>
+    <h1>Two-Factor Authentication</h1>
+    <p>Enter your 2FA code to continue logging in as <%= email %></p>
+  </div>
+</section>
+
+<section class="card">
+  <form method="post" action="/login" class="form">
+    <label>2FA Code</label><input name="token" type="text" placeholder="123456" required autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6">
+    <button class="primary">Verify</button>
+  </form>
+  <p class="muted small">Enter the 6-digit code from your authenticator app (Google Authenticator, Authy, etc.)</p>
+</section>
+<%- include('layout-bottom') %>

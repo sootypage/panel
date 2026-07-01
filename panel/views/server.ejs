@@ -567,6 +567,22 @@
       <input name="confirmName" placeholder="<%= server.name %>" required>
       <div class="span"><button class="danger">Delete server forever</button></div>
     </form>
+    <hr class="soft-sep">
+    <h3>Server Migration</h3>
+    <p class="muted small">Move this server to a different node. The server will be stopped, files transferred, and recreated on the new node.</p>
+    <form method="post" action="/servers/<%= server.id %>/migrate" class="form settings-grid" onsubmit="return confirm('Migrate server to new node? This will stop the server and transfer all files.')">
+      <label>Target node</label><select name="targetNodeId" required>
+        <% allNodes.forEach(n => { %>
+          <option value="<%= n.id %>" <%= n.id === server.nodeId ? 'disabled' : '' %>><%= n.name %> - <%= n.location %></option>
+        <% }) %>
+      </select>
+      <label>Target storage location</label><select name="storageLocation" required>
+        <option value="/var/lib/docker">Default (/var/lib/docker)</option>
+        <option value="/mnt/ssd1">SSD 1 (/mnt/ssd1)</option>
+        <option value="/mnt/ssd2">SSD 2 (/mnt/ssd2)</option>
+      </select>
+      <div class="span"><button class="primary">Migrate server</button></div>
+    </form>
   </div>
 </section>
 

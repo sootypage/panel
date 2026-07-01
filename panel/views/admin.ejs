@@ -14,6 +14,7 @@
   <button class="tab-btn" data-tab="resources">Server resources</button>
   <button class="tab-btn" data-tab="import">Import Docker</button>
   <button class="tab-btn" data-tab="plans">Plans</button>
+  <button class="tab-btn" data-tab="shop">Shop</button>
   <button class="tab-btn" data-tab="api">API / Website</button>
   <button class="tab-btn" data-tab="security">Security</button>
 </section>
@@ -29,19 +30,24 @@
 
 <section id="tab-nodes" class="tab-panel">
   <div class="card">
-    <h2>Add Ubuntu node</h2>
+    <h2>Add node</h2>
     <form method="post" action="/admin/nodes" class="form two-col">
       <label>Name</label><input name="name" required placeholder="Sydney Node 1">
       <label>Agent URL</label><input name="url" required placeholder="http://1.2.3.4:4100">
       <label>Public IP</label><input name="publicIp" placeholder="38.87.117.169">
       <label>Agent token</label><input name="token" placeholder="Paste agent token if different from panel token">
       <label>Location</label><input name="location" placeholder="Australia">
+      <label>Node type</label><select name="nodeType">
+        <option value="game">Game Server</option>
+        <option value="database">Database</option>
+        <option value="both">Both (Game + Database)</option>
+      </select>
       <button class="primary span">Add node</button>
     </form>
   </div>
   <div class="card">
     <h2>Nodes</h2>
-    <table><thead><tr><th>Name</th><th>URL</th><th>Public IP</th><th>Location</th><th>Status data</th><th>Actions</th></tr></thead><tbody>
+    <table><thead><tr><th>Name</th><th>URL</th><th>Public IP</th><th>Location</th><th>Type</th><th>Status data</th><th>Actions</th></tr></thead><tbody>
       <% db.nodes.forEach(n => { %>
         <tr>
           <form method="post" action="/admin/nodes/<%= n.id %>/update">
@@ -49,6 +55,7 @@
             <td><input name="url" value="<%= n.url %>"></td>
             <td><input name="publicIp" value="<%= n.publicIp || '' %>"></td>
             <td><input name="location" value="<%= n.location || 'Unknown' %>"></td>
+            <td><span class="pill <%= n.nodeType === 'database' ? 'success' : n.nodeType === 'both' ? 'primary' : 'default' %>"><%= n.nodeType || 'game' %></span></td>
             <td class="small">Last online: <%= n.lastOnlineAt ? new Date(n.lastOnlineAt).toLocaleString() : 'Never' %><br>Last down: <%= n.lastDownAt ? new Date(n.lastDownAt).toLocaleString() : 'Never' %></td>
             <td class="actions-cell"><input name="token" type="password" placeholder="New token optional"><button class="small-btn">Save</button>
           </form>
@@ -72,15 +79,18 @@
       <label>Extra port slots</label><input name="portSlots" type="number" value="0" min="0">
       <label>Backup slots</label><input name="backupSlots" type="number" value="1" min="0">
       <label>Database slots</label><input name="databaseSlots" type="number" value="0" min="0">
+      <label>Initial Credit ($)</label><input name="creditBalance" type="number" step="0.01" value="0" min="0">
       <button class="primary span">Create user</button>
     </form>
   </div>
   <div class="card">
     <h2>Users</h2>
-    <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Subdomain slots</th><th>Port slots</th><th>Backup slots</th><th>Database slots</th><th>Actions</th></tr></thead><tbody>
+    <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Credit</th><th>Total Spent</th><th>Subdomain slots</th><th>Port slots</th><th>Backup slots</th><th>Database slots</th><th>Actions</th></tr></thead><tbody>
       <% db.users.forEach(u => { %>
         <tr>
           <td><%= u.email %></td><td><%= u.name %></td><td><%= u.role %></td>
+          <td>$<%= (u.creditBalance || 0).toFixed(2) %></td>
+          <td>$<%= (u.totalSpent || 0).toFixed(2) %></td>
           <td><%= u.subdomainSlots || (u.role === 'admin' ? 999 : 1) %></td>
           <td><%= u.portSlots || (u.role === 'admin' ? 999 : 0) %></td>
           <td><%= u.backupSlots || (u.role === 'admin' ? 999 : 1) %></td>
@@ -92,6 +102,10 @@
               <input name="backupSlots" type="number" min="0" value="<%= u.backupSlots || (u.role === 'admin' ? 999 : 1) %>" title="Backup slots">
               <input name="databaseSlots" type="number" min="0" value="<%= u.databaseSlots || (u.role === 'admin' ? 999 : 0) %>" title="Database slots">
               <button class="small-btn">Save slots</button>
+            </form>
+            <form method="post" action="/admin/users/<%= u.id %>/credit" class="inline-form-wide">
+              <input name="creditBalance" type="number" step="0.01" min="0" value="<%= u.creditBalance || 0 %>" title="Credit balance">
+              <button class="small-btn">Set credit</button>
             </form>
           </td>
         </tr>
@@ -217,6 +231,96 @@
           <td><code><%= p.stripePriceId || 'Not set' %></code></td>
           <td>
             <form method="post" action="/admin/plans/<%= p.id %>/delete" onsubmit="return confirm('Delete this plan?');">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody></table>
+  </div>
+</section>
+
+<section id="tab-shop" class="tab-panel">
+  <div class="card">
+    <h2>Shop Settings</h2>
+    <p class="muted">Enable/disable the shop and manage shop items.</p>
+    <form method="post" action="/admin/shop/settings" class="form">
+      <label>Shop Status</label><select name="shopEnabled">
+        <option value="false" <%= !db.shopEnabled ? 'selected' : '' %>>Disabled</option>
+        <option value="true" <%= db.shopEnabled ? 'selected' : '' %>>Enabled</option>
+      </select>
+      <label>Sign-ups</label><select name="signUpEnabled">
+        <option value="false" <%= !db.signUpEnabled ? 'selected' : '' %>>Disabled</option>
+        <option value="true" <%= db.signUpEnabled ? 'selected' : '' %>>Enabled</option>
+      </select>
+      <button class="primary">Save Settings</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>SMTP Email Configuration</h2>
+    <p class="muted">Configure SMTP for sending password reset emails.</p>
+    <form method="post" action="/admin/smtp/config" class="form">
+      <label>Enable Email</label><select name="enabled">
+        <option value="false" <%= !db.smtpConfig?.enabled ? 'selected' : '' %>>Disabled</option>
+        <option value="true" <%= db.smtpConfig?.enabled ? 'selected' : '' %>>Enabled</option>
+      </select>
+      <label>SMTP Host</label><input name="host" type="text" placeholder="smtp.gmail.com" value="<%= db.smtpConfig?.host || '' %>">
+      <label>SMTP Port</label><input name="port" type="number" placeholder="587" value="<%= db.smtpConfig?.port || 587 %>">
+      <label>Secure (SSL/TLS)</label><select name="secure">
+        <option value="false" <%= !db.smtpConfig?.secure ? 'selected' : '' %>>No (STARTTLS)</option>
+        <option value="true" <%= db.smtpConfig?.secure ? 'selected' : '' %>>Yes (SSL/TLS)</option>
+      </select>
+      <label>SMTP Username</label><input name="user" type="text" placeholder="your@email.com" value="<%= db.smtpConfig?.user || '' %>">
+      <label>SMTP Password</label><input name="password" type="password" placeholder="••••••••" value="<%= db.smtpConfig?.password || '' %>">
+      <label>From Email</label><input name="from" type="email" placeholder="noreply@yourdomain.com" value="<%= db.smtpConfig?.from || '' %>">
+      <button class="primary">Save SMTP Config</button>
+    </form>
+    <form method="post" action="/admin/smtp/test" class="inline">
+      <button type="submit" class="secondary">Send Test Email</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Add Shop Item</h2>
+    <form method="post" action="/admin/shop/items" class="form two-col">
+      <label>Item name</label><input name="name" placeholder="Minecraft 4GB Server" required>
+      <label>Description</label><input name="description" placeholder="Perfect for small communities">
+      <label>Price ($)</label><input name="price" type="number" step="0.01" placeholder="9.99" required>
+      <label>Node</label><select name="nodeId" required>
+        <% db.nodes.forEach(n => { %>
+          <option value="<%= n.id %>"><%= n.name %> - <%= n.location %></option>
+        <% }) %>
+      </select>
+      <label>Game</label><select name="game">
+        <option value="minecraft">Minecraft</option>
+        <option value="rust">Rust</option>
+        <option value="valheim">Valheim</option>
+        <option value="terraria">Terraria</option>
+        <option value="factorio">Factorio</option>
+      </select>
+      <label>Docker Image</label><input name="image" placeholder="itzg/minecraft-server:java21">
+      <label>RAM MB</label><input name="memoryMb" type="number" value="4096" required>
+      <label>CPU</label><input name="cpuLimit" type="number" step="0.25" value="2" required>
+      <label>Storage MB</label><input name="storageLimitMb" type="number" value="20480" required>
+      <label>Port</label><input name="port" type="number" placeholder="25565">
+      <label>Version</label><input name="version" placeholder="LATEST">
+      <label>Storage Location</label><input name="storageLocation" placeholder="/var/lib/docker">
+      <button class="primary span">Add Item</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Shop Items</h2>
+    <table><thead><tr><th>Name</th><th>Price</th><th>RAM</th><th>CPU</th><th>Storage</th><th>Game</th><th>Node</th><th>Actions</th></tr></thead><tbody>
+      <% (db.shopItems || []).forEach(item => { %>
+        <tr>
+          <td><%= item.name %></td>
+          <td>$<%= item.price.toFixed(2) %></td>
+          <td><%= item.memoryMb %> MB</td>
+          <td><%= item.cpuLimit %></td>
+          <td><%= item.storageLimitMb %> MB</td>
+          <td><%= item.game %></td>
+          <td><%= db.nodes.find(n => n.id === item.nodeId)?.name || 'Unknown' %></td>
+          <td>
+            <form method="post" action="/admin/shop/items/<%= item.id %>/delete" onsubmit="return confirm('Delete this shop item?');">
               <button type="submit" class="danger">Delete</button>
             </form>
           </td>

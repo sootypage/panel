@@ -1,0 +1,42 @@
+<%- include('layout-top', { title }) %>
+<section class="hero">
+  <div>
+    <h1>Setup Two-Factor Authentication</h1>
+    <p>Secure your account with 2FA for <%= email %></p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Step 1: Scan QR Code</h2>
+  <p class="muted">Use an authenticator app (Google Authenticator, Authy, Microsoft Authenticator, etc.) to scan this QR code:</p>
+  <div class="qr-container">
+    <img src="<%= qrCodeUrl %>" alt="QR Code" class="qr-code">
+  </div>
+  <p class="muted small">Or enter this code manually: <code><%= secret %></code></p>
+  
+  <hr class="soft-sep">
+  
+  <h2>Step 2: Verify Setup</h2>
+  <p class="muted">Enter the 6-digit code from your authenticator app to confirm setup:</p>
+  <form method="post" action="/2fa/verify-setup" class="form">
+    <label>2FA Code</label><input name="token" type="text" placeholder="123456" required autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6">
+    <button class="primary">Enable 2FA</button>
+  </form>
+  <p class="muted small">After enabling, you'll need to enter a 2FA code every time you log in.</p>
+</section>
+
+<style>
+.qr-container {
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  margin: 20px 0;
+}
+.qr-code {
+  width: 200px;
+  height: 200px;
+}
+</style>
+<%- include('layout-bottom') %>

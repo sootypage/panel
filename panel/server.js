@@ -8,6 +8,8 @@ const morgan = require('morgan');
 const bcrypt = require('bcryptjs');
 const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid');
+const speakeasy = require('speakeasy');
+const QRCode = require('qrcode');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -326,7 +328,7 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHe
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
 const writeLimiter = rateLimit({ windowMs: 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false });
 
-function defaultDb() { return { users: [], nodes: [], servers: [], audit: [], apiKeys: [], plans: [], subscriptions: [], payments: [] }; }
+function defaultDb() { return { users: [], nodes: [], servers: [], audit: [], apiKeys: [], plans: [], subscriptions: [], payments: [], shopItems: [], shopPurchases: [], shopEnabled: false, signUpEnabled: true, passwordResetTokens: [], smtpConfig: { enabled: false, host: '', port: 587, secure: false, user: '', password: '', from: '' } }; }
 function normalizeDb(data) {
   data = data || defaultDb();
   data.users = data.users || [];
@@ -337,11 +339,20 @@ function normalizeDb(data) {
   data.plans = data.plans || [];
   data.subscriptions = data.subscriptions || [];
   data.payments = data.payments || [];
+  data.shopItems = data.shopItems || [];
+  data.shopPurchases = data.shopPurchases || [];
+  data.passwordResetTokens = data.passwordResetTokens || [];
+  if (data.shopEnabled === undefined) data.shopEnabled = false;
+  if (data.signUpEnabled === undefined) data.signUpEnabled = true;
+  data.smtpConfig = data.smtpConfig || { enabled: false, host: '', port: 587, secure: false, user: '', password: '', from: '' };
   for (const user of data.users) {
     user.subdomainSlots = Number(user.subdomainSlots || (user.role === 'admin' ? 999 : 0));
     user.portSlots = Number(user.portSlots ?? user.networkPortSlots ?? (user.role === 'admin' ? 999 : 0));
     user.backupSlots = Number(user.backupSlots ?? (user.role === 'admin' ? 999 : 1));
     user.databaseSlots = Number(user.databaseSlots ?? user.databases ?? (user.role === 'admin' ? 999 : 0));
+    user.creditBalance = Number(user.creditBalance || 0);
+    user.totalSpent = Number(user.totalSpent || 0);
+    user.avatar = user.avatar || null;
   }
   for (const srv of data.servers) {
     srv.subusers = srv.subusers || [];
@@ -421,7 +432,7 @@ async function bootstrapAdmin() {
   const reset = String(process.env.RESET_ADMIN_ON_START || 'false').toLowerCase() === 'true';
   let user = db.users.find(u => String(u.email || '').toLowerCase() === String(email).toLowerCase());
   if (!user) {
-    user = { id: uuidv4(), email, name: 'Admin', role: 'admin', subdomainSlots: 999, portSlots: 999, backupSlots: 999, databaseSlots: 999, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() };
+    user = { id: uuidv4(), email, name: 'Admin', role: 'admin', subdomainSlots: 999, portSlots: 999, backupSlots: 999, databaseSlots: 999, creditBalance: 0, totalSpent: 0, subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() };
     db.users.push(user);
     console.log(`Created admin user: ${email}`);
   }
@@ -507,20 +518,466 @@ app.use((req, res, next) => { res.locals.brand = BRAND_NAME; res.locals.user = c
 
 app.get('/', (req, res) => req.session.userId ? res.redirect('/dashboard') : res.redirect('/login'));
 app.get('/login', (req, res) => res.render('login', { title: 'Login' }));
+app.get('/register', (req, res) => {
+  const db = readDb();
+  if (!db.signUpEnabled) {
+    req.flash('error', 'Sign-ups are currently disabled.');
+    return res.redirect('/login');
+  }
+  res.render('register', { title: 'Sign Up' });
+});
+app.post('/register', loginLimiter, async (req, res) => {
+  const db = readDb();
+  if (!db.signUpEnabled) {
+    req.flash('error', 'Sign-ups are currently disabled.');
+    return res.redirect('/login');
+  }
+  
+  const { email, password, confirmPassword } = req.body;
+  
+  if (!email || !password || !confirmPassword) {
+    req.flash('error', 'All fields are required.');
+    return res.redirect('/register');
+  }
+  
+  if (password !== confirmPassword) {
+    req.flash('error', 'Passwords do not match.');
+    return res.redirect('/register');
+  }
+  
+  if (password.length < 8) {
+    req.flash('error', 'Password must be at least 8 characters.');
+    return res.redirect('/register');
+  }
+  
+  if (db.users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+    req.flash('error', 'Email already registered.');
+    return res.redirect('/register');
+  }
+  
+  const newUser = {
+    id: uuidv4(),
+    email: email.toLowerCase(),
+    name: email.split('@')[0],
+    role: 'user',
+    subdomainSlots: 1,
+    portSlots: 0,
+    backupSlots: 1,
+    databaseSlots: 0,
+    creditBalance: 0,
+    totalSpent: 0,
+    passwordHash: await bcrypt.hash(password, 10),
+    subusers: [],
+    networkPorts: [],
+    databases: [],
+    subdomains: [],
+    backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null },
+    createdAt: new Date().toISOString()
+  };
+  
+  db.users.push(newUser);
+  writeDb(db);
+  req.flash('success', 'Account created successfully! Please log in.');
+  res.redirect('/login');
+});
+
+app.get('/forgot-password', (req, res) => res.render('forgot-password', { title: 'Forgot Password' }));
+
+app.post('/forgot-password', loginLimiter, async (req, res) => {
+  const db = readDb();
+  const { email } = req.body;
+  
+  const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  
+  if (!user) {
+    // Don't reveal if email exists or not for security
+    req.flash('success', 'If an account exists with that email, a reset link has been sent.');
+    return res.redirect('/login');
+  }
+  
+  // Generate reset token
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+  
+  // Remove any existing tokens for this user
+  db.passwordResetTokens = db.passwordResetTokens.filter(t => t.userId !== user.id);
+  
+  // Add new token
+  db.passwordResetTokens.push({
+    id: uuidv4(),
+    userId: user.id,
+    token,
+    expiresAt
+  });
+  
+  writeDb(db);
+  
+  // Send password reset email
+  const resetLink = `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+  
+  if (db.smtpConfig && db.smtpConfig.enabled && db.smtpConfig.host && db.smtpConfig.from) {
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: db.smtpConfig.host,
+        port: db.smtpConfig.port,
+        secure: db.smtpConfig.secure,
+        auth: db.smtpConfig.user ? {
+          user: db.smtpConfig.user,
+          pass: db.smtpConfig.password
+        } : undefined
+      });
+      
+      await transporter.sendMail({
+        from: db.smtpConfig.from,
+        to: user.email,
+        subject: 'Password Reset Request',
+        text: `Hello ${user.name},\n\nYou requested a password reset. Click the link below to reset your password:\n\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`
+      });
+      
+      console.log(`[PASSWORD RESET] Email sent to: ${user.email}`);
+    } catch (e) {
+      console.error(`[PASSWORD RESET] Failed to send email: ${e.message}`);
+      // Fallback to console log if email fails
+      console.log(`[PASSWORD RESET] Email: ${user.email}, Reset Link: ${resetLink}`);
+    }
+  } else {
+    // Fallback to console log if SMTP not configured
+    console.log(`[PASSWORD RESET] Email: ${user.email}, Reset Link: ${resetLink}`);
+  }
+  
+  req.flash('success', 'If an account exists with that email, a reset link has been sent.');
+  res.redirect('/login');
+});
+
+app.get('/reset-password', (req, res) => {
+  const db = readDb();
+  const { token } = req.query;
+  
+  const resetToken = db.passwordResetTokens.find(t => t.token === token);
+  
+  if (!resetToken || new Date(resetToken.expiresAt) < new Date()) {
+    req.flash('error', 'Invalid or expired reset link.');
+    return res.redirect('/forgot-password');
+  }
+  
+  res.render('reset-password', { title: 'Reset Password', token });
+});
+
+app.post('/reset-password', loginLimiter, async (req, res) => {
+  const db = readDb();
+  const { token, password, confirmPassword } = req.body;
+  
+  if (!password || !confirmPassword) {
+    req.flash('error', 'All fields are required.');
+    return res.redirect(`/reset-password?token=${token}`);
+  }
+  
+  if (password !== confirmPassword) {
+    req.flash('error', 'Passwords do not match.');
+    return res.redirect(`/reset-password?token=${token}`);
+  }
+  
+  if (password.length < 8) {
+    req.flash('error', 'Password must be at least 8 characters.');
+    return res.redirect(`/reset-password?token=${token}`);
+  }
+  
+  const resetToken = db.passwordResetTokens.find(t => t.token === token);
+  
+  if (!resetToken || new Date(resetToken.expiresAt) < new Date()) {
+    req.flash('error', 'Invalid or expired reset link.');
+    return res.redirect('/forgot-password');
+  }
+  
+  const user = db.users.find(u => u.id === resetToken.userId);
+  
+  if (!user) {
+    req.flash('error', 'User not found.');
+    return res.redirect('/forgot-password');
+  }
+  
+  // Update password
+  user.passwordHash = await bcrypt.hash(password, 10);
+  
+  // Remove used token
+  db.passwordResetTokens = db.passwordResetTokens.filter(t => t.token !== token);
+  
+  writeDb(db);
+  
+  req.flash('success', 'Password reset successfully! Please log in.');
+  res.redirect('/login');
+});
+
+app.get('/profile', requireLogin, (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  res.render('profile', { title: 'Profile', user });
+});
+
+app.post('/profile/email', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const { email, currentPassword } = req.body;
+  
+  if (!email || !currentPassword) {
+    req.flash('error', 'All fields are required.');
+    return res.redirect('/profile');
+  }
+  
+  if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+    req.flash('error', 'Current password is incorrect.');
+    return res.redirect('/profile');
+  }
+  
+  if (email.toLowerCase() !== user.email.toLowerCase() && db.users.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+    req.flash('error', 'Email already in use.');
+    return res.redirect('/profile');
+  }
+  
+  user.email = email.toLowerCase();
+  writeDb(db);
+  req.flash('success', 'Email updated successfully.');
+  res.redirect('/profile');
+});
+
+app.post('/profile/password', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const { currentPassword, newPassword, confirmPassword } = req.body;
+  
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    req.flash('error', 'All fields are required.');
+    return res.redirect('/profile');
+  }
+  
+  if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
+    req.flash('error', 'Current password is incorrect.');
+    return res.redirect('/profile');
+  }
+  
+  if (newPassword !== confirmPassword) {
+    req.flash('error', 'New passwords do not match.');
+    return res.redirect('/profile');
+  }
+  
+  if (newPassword.length < 8) {
+    req.flash('error', 'Password must be at least 8 characters.');
+    return res.redirect('/profile');
+  }
+  
+  user.passwordHash = await bcrypt.hash(newPassword, 10);
+  writeDb(db);
+  req.flash('success', 'Password updated successfully.');
+  res.redirect('/profile');
+});
+
+app.post('/profile/avatar', requireLogin, upload.single('avatar'), async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  
+  if (!req.file) {
+    req.flash('error', 'Please select an image to upload.');
+    return res.redirect('/profile');
+  }
+  
+  // In production, you'd want to validate the file type and size
+  // For now, we'll store it as a base64 data URL
+  const fs = require('fs');
+  const imageData = fs.readFileSync(req.file.path);
+  const base64 = imageData.toString('base64');
+  const mimeType = req.file.mimetype;
+  
+  // Clean up temp file
+  fs.unlinkSync(req.file.path);
+  
+  user.avatar = `data:${mimeType};base64,${base64}`;
+  writeDb(db);
+  req.flash('success', 'Profile picture updated successfully.');
+  res.redirect('/profile');
+});
+
+app.post('/profile/avatar/remove', requireLogin, (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  
+  user.avatar = null;
+  writeDb(db);
+  req.flash('success', 'Profile picture removed.');
+  res.redirect('/profile');
+});
+
 app.post('/login', loginLimiter, async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, token } = req.body;
   const user = readDb().users.find(u => u.email.toLowerCase() === String(email || '').toLowerCase());
   if (!user || !(await bcrypt.compare(password || '', user.passwordHash))) { req.flash('error', 'Invalid email or password.'); return res.redirect('/login'); }
+  
+  // Check 2FA if enabled
+  if (user.twoFactorEnabled && user.twoFactorSecret) {
+    if (!token) {
+      req.session.tempUserId = user.id;
+      return res.render('login-2fa', { title: 'Two-Factor Authentication', email: user.email });
+    }
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: token,
+      window: 2
+    });
+    if (!verified) {
+      req.flash('error', 'Invalid 2FA code.');
+      req.session.tempUserId = user.id;
+      return res.render('login-2fa', { title: 'Two-Factor Authentication', email: user.email });
+    }
+  }
+  
   req.session.userId = user.id;
+  delete req.session.tempUserId;
   res.redirect('/dashboard');
 });
 app.post('/logout', (req, res) => req.session.destroy(() => res.redirect('/login')));
+
+app.get('/2fa/setup', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  if (!user) return res.redirect('/login');
+  
+  if (user.twoFactorEnabled) {
+    req.flash('error', '2FA is already enabled. Disable it first to set up again.');
+    return res.redirect('/dashboard');
+  }
+  
+  // Generate secret
+  const secret = speakeasy.generateSecret({
+    name: `${BRAND_NAME} (${user.email})`,
+    issuer: BRAND_NAME
+  });
+  
+  // Generate QR code
+  const qrCodeUrl = await QRCode.toDataURL(secret.otpauth_url);
+  
+  // Store secret temporarily in session (not in DB until verified)
+  req.session.tempTwoFactorSecret = secret.base32;
+  
+  res.render('2fa-setup', { title: 'Setup 2FA', qrCodeUrl, secret: secret.base32, email: user.email });
+});
+
+app.post('/2fa/verify-setup', requireLogin, async (req, res) => {
+  const { token } = req.body;
+  const secret = req.session.tempTwoFactorSecret;
+  
+  if (!secret) {
+    req.flash('error', 'Setup session expired. Please start over.');
+    return res.redirect('/2fa/setup');
+  }
+  
+  const verified = speakeasy.totp.verify({
+    secret: secret,
+    encoding: 'base32',
+    token: token,
+    window: 2
+  });
+  
+  if (!verified) {
+    req.flash('error', 'Invalid code. Please try again.');
+    return res.redirect('/2fa/setup');
+  }
+  
+  // Save to database
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  if (user) {
+    user.twoFactorSecret = secret;
+    user.twoFactorEnabled = true;
+    writeDb(db);
+  }
+  
+  delete req.session.tempTwoFactorSecret;
+  req.flash('success', 'Two-factor authentication enabled successfully!');
+  res.redirect('/dashboard');
+});
+
+app.post('/2fa/disable', requireLogin, async (req, res) => {
+  const { token, password } = req.body;
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  
+  if (!user || !user.twoFactorEnabled) {
+    req.flash('error', '2FA is not enabled.');
+    return res.redirect('/dashboard');
+  }
+  
+  // Verify password
+  if (!(await bcrypt.compare(password || '', user.passwordHash))) {
+    req.flash('error', 'Invalid password.');
+    return res.redirect('/dashboard');
+  }
+  
+  // Verify 2FA code
+  const verified = speakeasy.totp.verify({
+    secret: user.twoFactorSecret,
+    encoding: 'base32',
+    token: token,
+    window: 2
+  });
+  
+  if (!verified) {
+    req.flash('error', 'Invalid 2FA code.');
+    return res.redirect('/dashboard');
+  }
+  
+  // Disable 2FA
+  user.twoFactorEnabled = false;
+  user.twoFactorSecret = null;
+  writeDb(db);
+  
+  req.flash('success', 'Two-factor authentication disabled.');
+  res.redirect('/dashboard');
+});
 
 app.get('/dashboard', requireLogin, (req, res) => {
   const db = readDb();
   const user = currentUser(req);
   const servers = user.role === 'admin' ? db.servers : db.servers.filter(s => s.ownerId === user.id);
-  res.render('dashboard', { title: 'Dashboard', servers, nodes: db.nodes });
+  res.render('dashboard', { title: 'Dashboard', servers, nodes: db.nodes, allNodes: db.nodes });
+});
+
+app.post('/dashboard/bulk-action', requireLogin, requireAdmin, async (req, res) => {
+  const db = readDb();
+  const action = req.body.action;
+  const serverIds = req.body.serverIds;
+  
+  if (!action || !['start', 'stop', 'restart'].includes(action)) {
+    req.flash('error', 'Invalid action.');
+    return res.redirect('/dashboard');
+  }
+  
+  if (!serverIds || !Array.isArray(serverIds)) {
+    req.flash('error', 'No servers selected.');
+    return res.redirect('/dashboard');
+  }
+  
+  let successCount = 0;
+  let failCount = 0;
+  
+  for (const serverId of serverIds) {
+    const server = db.servers.find(s => s.id === serverId);
+    if (!server) continue;
+    
+    const node = db.nodes.find(n => n.id === server.nodeId);
+    if (!node) continue;
+    
+    try {
+      await callAgent(node, `/servers/${server.agentServerId}/${action}`, { method: 'POST' });
+      successCount++;
+    } catch (e) {
+      console.error(`Bulk ${action} failed for ${server.name}:`, e.message);
+      failCount++;
+    }
+  }
+  
+  req.flash('success', `Bulk ${action} completed: ${successCount} succeeded, ${failCount} failed.`);
+  res.redirect('/dashboard');
 });
 
 app.get('/api-keys', requireLogin, (req, res) => {
@@ -596,7 +1053,7 @@ app.get('/status', async (req, res) => {
 app.get('/servers/:id', requireLogin, async (req, res) => {
   const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
   const filePath = req.query.path || '';
-  let live = null, files = null, backups = null, plugins = null, mods = null, settings = null, ftp = null;
+  let live = null, files = null, backups = null, plugins = null, mods = null, settings = null, ftp = null, stats = null;
   try { live = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}`); } catch (e) { live = { error: e.message }; }
   try { files = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=${encodeURIComponent(filePath)}`); } catch (e) { files = { error: e.message, items: [], path: filePath, parent: '' }; }
   try { backups = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/backups`); } catch (e) { backups = { error: e.message, backups: [] }; }
@@ -604,7 +1061,8 @@ app.get('/servers/:id', requireLogin, async (req, res) => {
   try { mods = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/files?path=mods`); } catch (e) { mods = { error: e.message, items: [] }; }
   try { settings = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/settings`); } catch (e) { settings = { error: e.message, settings: {} }; }
   try { ftp = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/ftp`); } catch (e) { ftp = { error: e.message, enabled: false }; }
-  res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user });
+  try { stats = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/stats`); } catch (e) { stats = { ok: false, error: e.message, cpu: 0, memory: { usage: '0B', percent: 0 }, network: { rx: '0B', tx: '0B' }, disk: { read: '0B', write: '0B' } }; }
+  res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user, allNodes: ctx.db.nodes, stats });
 });
 
 app.post('/servers/:id/action', requireLogin, async (req, res) => {
@@ -1348,7 +1806,7 @@ async function handleProvisionUser(req, res) {
     let plainPassword = null;
     if (!user) {
       plainPassword = req.body.password || crypto.randomBytes(8).toString('hex');
-      user = { id: uuidv4(), email, name: req.body.name || email, role: req.body.role === 'admin' && req.apiUser.role === 'admin' ? 'admin' : 'user', subdomainSlots: Number(req.body.subdomainSlots || 0), portSlots: Number(req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || 0), passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
+      user = { id: uuidv4(), email, name: req.body.name || email, role: req.body.role === 'admin' && req.apiUser.role === 'admin' ? 'admin' : 'user', subdomainSlots: Number(req.body.subdomainSlots || 0), portSlots: Number(req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || 0), creditBalance: 0, totalSpent: 0, passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
       db.users.push(user);
     } else {
       user.name = req.body.name || user.name;
@@ -1372,7 +1830,7 @@ async function handleProvisionOrder(req, res) {
     if (!user) {
       if (!req.apiKey.permissions.includes('provision:user')) return res.status(403).json({ ok: false, error: 'API key missing permission: provision:user' });
       plainPassword = req.body.password || crypto.randomBytes(8).toString('hex');
-      user = { id: uuidv4(), email, name: req.body.name || email, role: 'user', subdomainSlots: Number(req.body.subdomainSlots || 0), portSlots: Number(req.body.extraPorts || req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || req.body.databases || 0), subusers: [], networkPorts: [], databases: [], subdomains: [], passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
+      user = { id: uuidv4(), email, name: req.body.name || email, role: 'user', subdomainSlots: Number(req.body.subdomainSlots || 0), portSlots: Number(req.body.extraPorts || req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || req.body.databases || 0), creditBalance: 0, totalSpent: 0, subusers: [], networkPorts: [], databases: [], subdomains: [], passwordHash: await bcrypt.hash(plainPassword, 10), createdAt: new Date().toISOString() };
       db.users.push(user);
     }
     const plan = (db.plans || []).find(p => p.id === req.body.planId || p.name === req.body.planId || p.name === req.body.planName);
@@ -1455,6 +1913,57 @@ app.post('/servers/:id/delete', requireLogin, async (req, res) => {
     req.flash('success', 'Server deleted. Docker container, files, and backups were removed.');
     return res.redirect('/dashboard');
   } catch (e) { req.flash('error', e.message); return res.redirect(`/servers/${ctx.server.id}#settings`); }
+});
+
+app.post('/servers/:id/migrate', requireLogin, async (req, res) => {
+  const ctx = getOwnedServer(req, res); if (ctx.error) return ctx.error();
+  if (ctx.user.role !== 'admin') { req.flash('error', 'Only admins can migrate servers.'); return res.redirect(`/servers/${ctx.server.id}#settings`); }
+  
+  const targetNodeId = req.body.targetNodeId;
+  const storageLocation = req.body.storageLocation || '/var/lib/docker';
+  
+  const targetNode = ctx.db.nodes.find(n => n.id === targetNodeId);
+  if (!targetNode) { req.flash('error', 'Target node not found.'); return res.redirect(`/servers/${ctx.server.id}#settings`); }
+  if (targetNodeId === ctx.server.nodeId) { req.flash('error', 'Cannot migrate to the same node.'); return res.redirect(`/servers/${ctx.server.id}#settings`); }
+  
+  try {
+    // Stop the server on current node
+    try { await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/stop`, { method: 'POST', timeout: TIMEOUT * 30 }); } catch (e) { console.error('Stop failed:', e); }
+    
+    // Delete server from current node
+    await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/delete`, { method: 'POST', timeout: TIMEOUT * 60 });
+    
+    // Create server on new node
+    const newServerData = await callAgent(targetNode, '/servers', {
+      method: 'POST',
+      timeout: TIMEOUT * 60,
+      body: {
+        name: ctx.server.name,
+        image: ctx.server.image,
+        port: ctx.server.port,
+        ipAddress: ctx.server.ipAddress,
+        memoryMb: ctx.server.memoryMb,
+        cpuLimit: ctx.server.cpuLimit,
+        storageLimitMb: ctx.server.storageLimitMb,
+        game: ctx.server.game,
+        env: ctx.server.env,
+        networkPorts: ctx.server.networkPorts,
+        storageLocation: storageLocation
+      }
+    });
+    
+    // Update database with new node and agent server ID
+    ctx.server.nodeId = targetNodeId;
+    ctx.server.agentServerId = newServerData.server.id;
+    ctx.server.storageLocation = storageLocation;
+    writeDb(ctx.db);
+    
+    req.flash('success', `Server migrated to ${targetNode.name}. Files will need to be manually transferred or restored from backup.`);
+    res.redirect(`/servers/${ctx.server.id}#settings`);
+  } catch (e) { 
+    req.flash('error', `Migration failed: ${e.message}`); 
+    res.redirect(`/servers/${ctx.server.id}#settings`); 
+  }
 });
 
 
@@ -1607,12 +2116,361 @@ app.post('/admin/plans/:id/delete', requireLogin, requireAdmin, (req, res) => {
   res.redirect('/admin#plans');
 });
 
+app.post('/admin/shop/settings', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  db.shopEnabled = req.body.shopEnabled === 'true';
+  db.signUpEnabled = req.body.signUpEnabled === 'true';
+  writeDb(db);
+  req.flash('success', 'Shop settings updated.');
+  res.redirect('/admin#shop');
+});
+
+app.post('/admin/smtp/config', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  db.smtpConfig = {
+    enabled: req.body.enabled === 'true',
+    host: req.body.host || '',
+    port: Number(req.body.port) || 587,
+    secure: req.body.secure === 'true',
+    user: req.body.user || '',
+    password: req.body.password || '',
+    from: req.body.from || ''
+  };
+  writeDb(db);
+  req.flash('success', 'SMTP configuration saved.');
+  res.redirect('/admin#shop');
+});
+
+app.post('/admin/smtp/test', requireLogin, requireAdmin, async (req, res) => {
+  const db = readDb();
+  const config = db.smtpConfig;
+  
+  if (!config.enabled || !config.host || !config.from) {
+    req.flash('error', 'SMTP is not configured properly.');
+    return res.redirect('/admin#shop');
+  }
+  
+  try {
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: config.user ? {
+        user: config.user,
+        pass: config.password
+      } : undefined
+    });
+    
+    await transporter.sendMail({
+      from: config.from,
+      to: config.user || config.from,
+      subject: 'SMTP Test Email',
+      text: 'This is a test email from your panel. If you received this, SMTP is configured correctly!'
+    });
+    
+    req.flash('success', 'Test email sent successfully!');
+  } catch (e) {
+    req.flash('error', `Failed to send test email: ${e.message}`);
+  }
+  
+  res.redirect('/admin#shop');
+});
+
+app.post('/admin/shop/items', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  const item = {
+    id: uuidv4(),
+    name: req.body.name,
+    description: req.body.description,
+    price: Number(req.body.price),
+    nodeId: req.body.nodeId,
+    game: req.body.game,
+    image: req.body.image,
+    memoryMb: Number(req.body.memoryMb),
+    cpuLimit: Number(req.body.cpuLimit),
+    storageLimitMb: Number(req.body.storageLimitMb),
+    port: Number(req.body.port) || null,
+    version: req.body.version,
+    storageLocation: req.body.storageLocation || '/var/lib/docker',
+    createdAt: new Date().toISOString()
+  };
+  db.shopItems = db.shopItems || [];
+  db.shopItems.push(item);
+  writeDb(db);
+  req.flash('success', 'Shop item added.');
+  res.redirect('/admin#shop');
+});
+
+app.post('/admin/shop/items/:id/delete', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  db.shopItems = db.shopItems.filter(i => i.id !== req.params.id);
+  writeDb(db);
+  req.flash('success', 'Shop item deleted.');
+  res.redirect('/admin#shop');
+});
+
 app.get('/billing', requireLogin, (req, res) => {
   const db = readDb();
   const user = db.users.find(u => u.id === req.session.userId);
   const subscriptions = db.subscriptions.filter(s => s.userId === user.id);
   const payments = db.payments.filter(p => p.userId === user.id);
-  res.render('billing', { title: 'Billing', db, user, subscriptions, payments });
+  const shopPurchases = (db.shopPurchases || []).filter(p => p.userId === user.id);
+  res.render('billing', { title: 'Billing', db, user, subscriptions, payments, shopPurchases });
+});
+
+app.get('/shop', requireLogin, (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  res.render('shop', { title: 'Shop', shopEnabled: db.shopEnabled, shopItems: db.shopItems || [], user, db });
+});
+
+app.post('/shop/purchase', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const item = db.shopItems.find(i => i.id === req.body.itemId);
+  if (!item) { req.flash('error', 'Item not found.'); return res.redirect('/shop'); }
+  if (!db.shopEnabled) { req.flash('error', 'Shop is closed.'); return res.redirect('/shop'); }
+  
+  const paymentMethod = req.body.paymentMethod;
+  const serverName = req.body.serverName;
+  
+  if (paymentMethod === 'credit') {
+    if (user.creditBalance < item.price) { req.flash('error', 'Insufficient credit balance.'); return res.redirect('/shop'); }
+    user.creditBalance -= item.price;
+    user.totalSpent += item.price;
+  } else if (paymentMethod === 'stripe') {
+    if (!STRIPE_SECRET_KEY) { req.flash('error', 'Stripe not configured.'); return res.redirect('/shop'); }
+    // Create Stripe checkout session
+    try {
+      const checkoutSession = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency: 'usd',
+            product_data: { name: item.name },
+            unit_amount: Math.round(item.price * 100),
+          },
+          quantity: 1,
+        }],
+        success_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/shop/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.PUBLIC_BASE_URL || 'http://localhost:3000'}/shop`,
+        customer_email: user.email,
+        metadata: {
+          userId: user.id,
+          itemId: item.id,
+          serverName: serverName,
+          serverType: req.body.serverType || 'PAPER'
+        }
+      });
+      return res.redirect(303, checkoutSession.url);
+    } catch (e) {
+      req.flash('error', `Stripe error: ${e.message}`);
+      return res.redirect('/shop');
+    }
+  }
+  
+  // Create server
+  try {
+    const node = db.nodes.find(n => n.id === item.nodeId) || db.nodes[0];
+    if (!node) { req.flash('error', 'No available nodes.'); return res.redirect('/shop'); }
+    
+    const cfg = gameTypeConfig(req.body.serverType || 'PAPER');
+    const port = item.port || cfg.defaultPort || 25565;
+    
+    const created = await callAgent(node, '/servers', { 
+      method: 'POST', 
+      body: { 
+        name: serverName, 
+        game: item.game || cfg.game, 
+        image: item.image || cfg.image, 
+        memoryMb: item.memoryMb, 
+        cpuLimit: item.cpuLimit, 
+        storageLimitMb: item.storageLimitMb, 
+        ipAddress: item.ipAddress || node.publicIp || nodeHostFromUrl(node.url), 
+        port, 
+        storageLocation: item.storageLocation || '/var/lib/docker',
+        env: { EULA: 'TRUE', TYPE: cfg.envType, VERSION: item.version || 'LATEST', MEMORY: `${Math.floor(item.memoryMb * 0.85)}M` } 
+      }, 
+      timeout: TIMEOUT * 60 
+    });
+    
+    const server = { 
+      id: uuidv4(), 
+      agentServerId: created.server.id, 
+      name: serverName, 
+      game: item.game || cfg.game, 
+      serverType: serverTypeKey(cfg.envType), 
+      ownerId: user.id, 
+      nodeId: node.id, 
+      memoryMb: item.memoryMb, 
+      cpuLimit: item.cpuLimit, 
+      storageLimitMb: item.storageLimitMb, 
+      ipAddress: item.ipAddress || node.publicIp || nodeHostFromUrl(node.url), 
+      port, 
+      storageLocation: item.storageLocation || '/var/lib/docker',
+      subusers: [], 
+      networkPorts: [], 
+      databases: [], 
+      subdomains: [], 
+      backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, 
+      createdAt: new Date().toISOString() 
+    };
+    
+    db.servers.push(server);
+    
+    // Create purchase record
+    const purchase = {
+      id: uuidv4(),
+      userId: user.id,
+      itemId: item.id,
+      itemName: item.name,
+      serverId: server.id,
+      serverName: serverName,
+      price: item.price,
+      paymentMethod: paymentMethod,
+      status: 'active',
+      createdAt: new Date().toISOString()
+    };
+    db.shopPurchases.push(purchase);
+    
+    writeDb(db);
+    req.flash('success', `Server "${serverName}" purchased successfully!`);
+    res.redirect(`/servers/${server.id}`);
+  } catch (e) {
+    // Refund if credit payment failed
+    if (paymentMethod === 'credit') {
+      user.creditBalance += item.price;
+      user.totalSpent -= item.price;
+    }
+    req.flash('error', `Failed to create server: ${e.message}`);
+    res.redirect('/shop');
+  }
+});
+
+app.get('/shop/success', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  
+  try {
+    const session = await stripe.checkout.sessions.retrieve(req.query.session_id);
+    if (session.payment_status !== 'paid') {
+      req.flash('error', 'Payment not completed.');
+      return res.redirect('/shop');
+    }
+    
+    const item = db.shopItems.find(i => i.id === session.metadata.itemId);
+    if (!item) { req.flash('error', 'Item not found.'); return res.redirect('/shop'); }
+    
+    // Update user total spent
+    user.totalSpent += item.price;
+    
+    // Create server (same logic as credit purchase)
+    const node = db.nodes.find(n => n.id === item.nodeId) || db.nodes[0];
+    if (!node) { req.flash('error', 'No available nodes.'); return res.redirect('/shop'); }
+    
+    const cfg = gameTypeConfig(session.metadata.serverType || 'PAPER');
+    const port = item.port || cfg.defaultPort || 25565;
+    
+    const created = await callAgent(node, '/servers', { 
+      method: 'POST', 
+      body: { 
+        name: session.metadata.serverName, 
+        game: item.game || cfg.game, 
+        image: item.image || cfg.image, 
+        memoryMb: item.memoryMb, 
+        cpuLimit: item.cpuLimit, 
+        storageLimitMb: item.storageLimitMb, 
+        ipAddress: item.ipAddress || node.publicIp || nodeHostFromUrl(node.url), 
+        port, 
+        storageLocation: item.storageLocation || '/var/lib/docker',
+        env: { EULA: 'TRUE', TYPE: cfg.envType, VERSION: item.version || 'LATEST', MEMORY: `${Math.floor(item.memoryMb * 0.85)}M` } 
+      }, 
+      timeout: TIMEOUT * 60 
+    });
+    
+    const server = { 
+      id: uuidv4(), 
+      agentServerId: created.server.id, 
+      name: session.metadata.serverName, 
+      game: item.game || cfg.game, 
+      serverType: serverTypeKey(cfg.envType), 
+      ownerId: user.id, 
+      nodeId: node.id, 
+      memoryMb: item.memoryMb, 
+      cpuLimit: item.cpuLimit, 
+      storageLimitMb: item.storageLimitMb, 
+      ipAddress: item.ipAddress || node.publicIp || nodeHostFromUrl(node.url), 
+      port, 
+      storageLocation: item.storageLocation || '/var/lib/docker',
+      subusers: [], 
+      networkPorts: [], 
+      databases: [], 
+      subdomains: [], 
+      backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, 
+      createdAt: new Date().toISOString() 
+    };
+    
+    db.servers.push(server);
+    
+    const purchase = {
+      id: uuidv4(),
+      userId: user.id,
+      itemId: item.id,
+      itemName: item.name,
+      serverId: server.id,
+      serverName: session.metadata.serverName,
+      price: item.price,
+      paymentMethod: 'stripe',
+      stripePaymentId: session.payment_intent,
+      status: 'active',
+      createdAt: new Date().toISOString()
+    };
+    db.shopPurchases.push(purchase);
+    
+    writeDb(db);
+    req.flash('success', `Server "${session.metadata.serverName}" purchased successfully!`);
+    res.redirect(`/servers/${server.id}`);
+  } catch (e) {
+    req.flash('error', `Failed to complete purchase: ${e.message}`);
+    res.redirect('/shop');
+  }
+});
+
+app.post('/shop/cancel/:id', requireLogin, async (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.session.userId);
+  const purchase = db.shopPurchases.find(p => p.id === req.params.id);
+  
+  if (!purchase || purchase.userId !== user.id) { req.flash('error', 'Purchase not found.'); return res.redirect('/shop'); }
+  if (purchase.status !== 'active') { req.flash('error', 'Purchase already cancelled.'); return res.redirect('/shop'); }
+  
+  try {
+    const server = db.servers.find(s => s.id === purchase.serverId);
+    if (server) {
+      const node = db.nodes.find(n => n.id === server.nodeId);
+      if (node) {
+        await callAgent(node, `/servers/${server.agentServerId}/delete`, { method: 'POST', timeout: TIMEOUT * 60 });
+      }
+      db.servers = db.servers.filter(s => s.id !== server.id);
+    }
+    
+    purchase.status = 'cancelled';
+    
+    // Refund credit if paid with credit
+    if (purchase.paymentMethod === 'credit') {
+      user.creditBalance += purchase.price;
+      user.totalSpent -= purchase.price;
+    }
+    
+    writeDb(db);
+    req.flash('success', 'Purchase cancelled and server deleted.');
+    res.redirect('/shop');
+  } catch (e) {
+    req.flash('error', `Failed to cancel: ${e.message}`);
+    res.redirect('/shop');
+  }
 });
 
 app.post('/billing/subscribe', requireLogin, async (req, res) => {
@@ -1831,6 +2689,7 @@ app.post('/admin/nodes', requireLogin, requireAdmin, (req, res) => {
     publicIp: req.body.publicIp || nodeHostFromUrl(req.body.url || ''),
     token: req.body.token || '',
     location: req.body.location || 'Unknown',
+    nodeType: req.body.nodeType || 'game',
     createdAt: new Date().toISOString()
   });
   writeDb(db);
@@ -1840,7 +2699,7 @@ app.post('/admin/nodes', requireLogin, requireAdmin, (req, res) => {
 app.post('/admin/users', requireLogin, requireAdmin, async (req, res) => {
   const db = readDb();
   if (db.users.some(u => u.email.toLowerCase() === String(req.body.email).toLowerCase())) { req.flash('error', 'User already exists.'); return res.redirect('/admin'); }
-  db.users.push({ id: uuidv4(), email: req.body.email, name: req.body.name || req.body.email, role: req.body.role || 'user', subdomainSlots: Number(req.body.subdomainSlots || 1), portSlots: Number(req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || 0), passwordHash: await bcrypt.hash(req.body.password || 'ChangeMe123!', 10), subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
+  db.users.push({ id: uuidv4(), email: req.body.email, name: req.body.name || req.body.email, role: req.body.role || 'user', subdomainSlots: Number(req.body.subdomainSlots || 1), portSlots: Number(req.body.portSlots || 0), backupSlots: Number(req.body.backupSlots || 1), databaseSlots: Number(req.body.databaseSlots || 0), creditBalance: Number(req.body.creditBalance || 0), totalSpent: 0, passwordHash: await bcrypt.hash(req.body.password || 'ChangeMe123!', 10), subusers: [], networkPorts: [], databases: [], subdomains: [], backupSchedule: { enabled: false, interval: 'off', keepLatest: 1, lastRunAt: null, nextRunAt: null }, createdAt: new Date().toISOString() });
   writeDb(db); req.flash('success', 'User created.'); res.redirect('/admin');
 });
 
@@ -1854,6 +2713,16 @@ app.post('/admin/users/:id/resources', requireLogin, requireAdmin, (req, res) =>
   user.databaseSlots = Math.max(0, Number(req.body.databaseSlots || 0));
   writeDb(db);
   req.flash('success', 'User resource slots updated.');
+  res.redirect('/admin#users');
+});
+
+app.post('/admin/users/:id/credit', requireLogin, requireAdmin, (req, res) => {
+  const db = readDb();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) { req.flash('error', 'User not found.'); return res.redirect('/admin#users'); }
+  user.creditBalance = Math.max(0, Number(req.body.creditBalance || 0));
+  writeDb(db);
+  req.flash('success', 'User credit balance updated.');
   res.redirect('/admin#users');
 });
 
@@ -1930,6 +2799,7 @@ app.post('/admin/nodes/:id/update', requireLogin, requireAdmin, (req, res) => {
   node.publicIp = req.body.publicIp || node.publicIp || nodeHostFromUrl(node.url || '');
   node.token = req.body.token || node.token || '';
   node.location = req.body.location || 'Unknown';
+  if (req.body.nodeType) node.nodeType = req.body.nodeType;
   node.updatedAt = new Date().toISOString();
   writeDb(db);
   req.flash('success', 'Node updated.');
