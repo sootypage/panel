@@ -1064,7 +1064,12 @@ app.get('/servers/:id', requireLogin, async (req, res) => {
     try { settings = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/settings`); } catch (e) { settings = { error: e.message, settings: {} }; }
     try { ftp = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/ftp`); } catch (e) { ftp = { error: e.message, enabled: false }; }
     try { stats = await callAgent(ctx.node, `/servers/${ctx.server.agentServerId}/stats`); } catch (e) { stats = { ok: false, error: e.message, cpu: 0, memory: { usage: '0B', percent: 0 }, network: { rx: '0B', tx: '0B' }, disk: { read: '0B', write: '0B' } }; }
-    res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user, allNodes: ctx.db.nodes, stats });
+    
+    const ownerUser = ctx.db.users.find(u => u.id === ctx.server.ownerId) || ctx.user;
+    const usedDatabaseSlots = (ctx.server.databases || []).length;
+    const totalDatabaseSlots = ownerUser.databaseSlots || (ownerUser.role === 'admin' ? 999 : 0);
+    
+    res.render('server', { title: ctx.server.name, server: ctx.server, node: ctx.node, live, files, backups, plugins, mods, settings, filePath, pluginCatalog: PLUGIN_CATALOG, addonInfo: addonInfo(ctx.server), allUsers: ctx.db.users, ftp, upgradeWebsiteUrl: UPGRADE_WEBSITE_URL, viewer: ctx.user, allNodes: ctx.db.nodes, stats, ownerUser, usedDatabaseSlots, totalDatabaseSlots });
   } catch (e) {
     console.error('Server page error:', e);
     res.status(500).render('error', { title: 'Internal Server Error', message: e.message });
